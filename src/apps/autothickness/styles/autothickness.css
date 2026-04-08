@@ -1,0 +1,259 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom Scrollbar (Light Theme) */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f5f9;
+    /* slate-100 */
+}
+
+::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    /* slate-300 */
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+    /* slate-400 */
+}
+
+.autothickness-app {
+    font-family: 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    user-select: none;
+    background-color: #f1f5f9; /* Slate 100 */
+    color: #0f172a; /* Slate 900 */
+}
+
+/* Sidebar & Panels */
+.sidebar,
+.results-panel {
+    background: #ffffff;
+    border-color: #e2e8f0;
+    /* Slate 200 */
+    color: #334155;
+    /* Slate 700 */
+}
+
+/* Section Titles */
+.section-title {
+    font-size: 0.75rem;
+    /* 12px */
+    font-weight: 700;
+    color: #94a3b8;
+    /* Slate 400 */
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.section-title::before {
+    content: '';
+    display: block;
+    width: 3px;
+    height: 12px;
+    background-color: #3b82f6;
+    /* Blue 500 */
+    border-radius: 1px;
+}
+
+/* Primary Button (Blue) */
+.btn-primary {
+    @apply w-full py-2.5 px-3 rounded-lg flex items-center justify-center gap-2 transition-all duration-200;
+    background: #2563eb;
+    /* Blue 600 */
+    color: white;
+    font-weight: 600;
+    font-size: 0.875rem;
+    box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.2);
+}
+
+.btn-primary:hover {
+    background: #1d4ed8;
+    /* Blue 700 */
+    box-shadow: 0 6px 8px -1px rgba(37, 99, 235, 0.3);
+}
+
+.btn-primary:active {
+    transform: translateY(1px);
+}
+
+/* Tool Buttons */
+.tool-btn {
+    @apply w-full py-2 px-3 rounded-md flex items-center gap-3 transition-all text-left;
+    background: #f8fafc;
+    /* Slate 50 */
+    color: #475569;
+    /* Slate 600 */
+    border: 1px solid #e2e8f0;
+    /* Slate 200 */
+    font-weight: 500;
+}
+
+.tool-btn:hover {
+    background: #f1f5f9;
+    /* Slate 100 */
+    color: #1e293b;
+    /* Slate 800 */
+    border-color: #cbd5e1;
+}
+
+.tool-btn.active {
+    background: #eff6ff;
+    /* Blue 50 */
+    border-color: #3b82f6;
+    /* Blue 500 */
+    color: #2563eb;
+    /* Blue 600 */
+    box-shadow: 0 0 0 1px #3b82f6, 0 1px 2px rgba(59, 130, 246, 0.1);
+    font-weight: 600;
+}
+
+.tool-shortcut {
+    margin-left: auto;
+    font-size: 10px;
+    background: #f1f5f9;
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: #94a3b8;
+    border: 1px solid #e2e8f0;
+}
+
+/* Inputs */
+input[type="number"],
+input[type="text"],
+select {
+    @apply bg-white border border-slate-300 text-slate-900 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 transition-colors shadow-sm;
+}
+
+/* Range Slider Styling */
+input[type=range] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    background: transparent;
+}
+
+input[type=range]:focus {
+    outline: none;
+}
+
+input[type=range]::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 4px;
+    cursor: pointer;
+    background: #e2e8f0;
+    /* slate-200 */
+    border-radius: 2px;
+}
+
+input[type=range]::-webkit-slider-thumb {
+    height: 14px;
+    width: 14px;
+    border-radius: 50%;
+    background: #3b82f6;
+    /* Blue 500 */
+    cursor: pointer;
+    -webkit-appearance: none;
+    margin-top: -5px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    border: 1px solid #ffffff;
+}
+
+input[type=range]:focus::-webkit-slider-thumb {
+    background: #2563eb;
+    box-shadow: 0 0 0 2px #bfdbfe;
+}
+
+/* Toggle Switch (Checkbox) */
+.toggle-checkbox {
+    appearance: none;
+    width: 2.25rem;
+    height: 1.25rem;
+    background: #e2e8f0;
+    /* slate-200 */
+    border-radius: 9999px;
+    position: relative;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.toggle-checkbox::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 1rem;
+    height: 1rem;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.2s;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.toggle-checkbox:checked {
+    background: #3b82f6;
+}
+
+.toggle-checkbox:checked::after {
+    transform: translateX(1rem);
+}
+
+/* Results Table */
+.results-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+}
+
+.results-table th {
+    background: #f8fafc;
+    /* slate-50 */
+    color: #64748b;
+    /* slate-500 */
+    font-weight: 600;
+    text-align: left;
+    padding: 8px;
+    border-bottom: 1px solid #e2e8f0;
+    /* slate-200 */
+}
+
+.results-table td {
+    padding: 8px;
+    border-bottom: 1px solid #f1f5f9;
+    /* slate-100 */
+    color: #334155;
+    /* slate-700 */
+}
+
+.results-table tr:hover {
+    background: #f8fafc;
+    /* slate-50 */
+}
+
+/* Canvas Area */
+.canvas-area {
+    background-image:
+        linear-gradient(rgba(0, 0, 0, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 0, 0, 0.05) 1px, transparent 1px);
+    background-size: 20px 20px;
+    background-position: -1px -1px;
+    background-color: #f1f5f9;
+    /* slate-100 */
+}
+
+/* Key Label */
+.key-label {
+    @apply bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded text-[10px] font-mono border border-slate-200;
+}

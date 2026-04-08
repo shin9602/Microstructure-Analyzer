@@ -1,0 +1,51 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+error.log
+launcher.log
+build_log.txt
+
+# Temp files and results
+node_modules/
+dist/
+dist-ssr/
+*.local
+.temp_ebsd/
+python/.temp_ebsd/
+python/*.png
+python/*.txt
+pdf_text.md
+ang_header.txt
+temp_header.txt
+_tools/
+.gemini/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Large Archives (Zip files 등 대용량 파일 제외)
+*.zip
+*.7z
+*.rar
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
