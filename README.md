@@ -42,7 +42,7 @@ AutoCalculator는 재료공학 연구 및 품질 관리를 위해 복잡한 EBSD
 
 ## 📄 라이선스
 
-Copyright © CVD개발팀 신현태. All rights reserved. 본 프로젝트의 권리는 CVD개발팀 신현태에게 있습니다.
+Copyright © CVD개발팀 신현태. All rights reserved.
 
 ---
 *고성능 미세조직 정량 분석 및 시각화를 위해 개발되었습니다.*
