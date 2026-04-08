@@ -42,7 +42,7 @@ AutoCalculator는 단순한 데이터 계산기를 넘어, 실험 데이터(XRD,
 
 ## 📄 라이선스
 
-Copyright © CVD개발팀 신현태. All rights reserved. 본 프로젝트에 포함된 모든 분석 알고리즘 및 소스 코드의 권리는 CVD개발팀 신현태에게 있습니다.
+Copyright © CVD개발팀 신현태. All rights reserved. 본 프로젝트의 권리는 CVD개발팀 신현태에게 있습니다.
 
 ---
 *재료 분석의 정확도와 효율성을 혁신하기 위해 개발된 통합 시스템입니다.*
