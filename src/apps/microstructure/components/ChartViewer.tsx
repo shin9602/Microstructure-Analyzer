@@ -13,7 +13,6 @@ import {
 } from 'recharts';
 import type { PeakDefinition, ParsedFile } from '../types';
 import { ChevronDown, RotateCcw, Move, MousePointer2, ZoomIn, Download, Settings2, X } from 'lucide-react';
-import { toPng } from 'html-to-image';
 
 interface ChartViewerProps {
   files: ParsedFile[];
@@ -120,12 +119,20 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
   }, [chartFixedRange]);
 
   // Download settings
+  const ASPECT_RATIOS = [
+    { label: '16:9', w: 1920, h: 1080, desc: '1920×1080' },
+    { label: '4:3', w: 1600, h: 1200, desc: '1600×1200' },
+    { label: '3:2', w: 1800, h: 1200, desc: '1800×1200' },
+    { label: '1:1', w: 1200, h: 1200, desc: '1200×1200' },
+  ];
   const [showDownloadSettings, setShowDownloadSettings] = useState(false);
   const [downloadXAxisMin, setDownloadXAxisMin] = useState<string>('');
   const [downloadXAxisMax, setDownloadXAxisMax] = useState<string>('');
   const [useCustomXAxis, setUseCustomXAxis] = useState(false);
   const [downloadWidth, setDownloadWidth] = useState<string>('1920');
   const [downloadHeight, setDownloadHeight] = useState<string>('1080');
+  const [downloadFontSize, setDownloadFontSize] = useState<string>('14');
+  const [downloadFormat, setDownloadFormat] = useState<'png' | 'jpg' | 'svg'>('png');
 
   useEffect(() => {
     const saved = localStorage.getItem('xrd_download_settings');
@@ -137,6 +144,8 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
         setUseCustomXAxis(!!settings.useCustom);
         setDownloadWidth(settings.width || '1920');
         setDownloadHeight(settings.height || '1080');
+        setDownloadFontSize(settings.fontSize || '14');
+        setDownloadFormat(settings.format || 'png');
       } catch (e) {
         console.error('Failed to load download settings:', e);
       }
@@ -149,7 +158,9 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
       xMax: downloadXAxisMax,
       useCustom: useCustomXAxis,
       width: downloadWidth,
-      height: downloadHeight
+      height: downloadHeight,
+      fontSize: downloadFontSize,
+      format: downloadFormat,
     }));
     setShowDownloadSettings(false);
   };
@@ -161,7 +172,7 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
   // Create a downsampled dataset for smooth interaction
   const downsampledData = useMemo(() => {
     if (data.length < 1000) return data;
-    const step = 5;
+    const step = 2;
     const sampled = [];
     for (let i = 0; i < data.length; i += step) {
       sampled.push(data[i]);
@@ -361,38 +372,89 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
     if (!chartContainerRef.current) return;
     setIsDownloading(true);
     setIsCapturing(true);
-    try {
-      const tw = parseInt(downloadWidth) || 1920;
-      const th = parseInt(downloadHeight) || 1080;
-      const os = chartContainerRef.current.getAttribute('style') || '';
-      const ol = left; const or = right;
 
+    const tw = parseInt(downloadWidth) || 1920;
+    const th = parseInt(downloadHeight) || 1080;
+    const ol = left;
+    const or = right;
+
+    try {
+      // X축 범위 변경이 필요한 경우 state 업데이트 후 렌더 대기
       if (useCustomXAxis && downloadXAxisMin && downloadXAxisMax) {
         const minVal = parseFloat(downloadXAxisMin);
         const maxVal = parseFloat(downloadXAxisMax);
-        if (!isNaN(minVal) && !isNaN(maxVal) && minVal < maxVal) { setLeft(minVal); setRight(maxVal); }
+        if (!isNaN(minVal) && !isNaN(maxVal) && minVal < maxVal) {
+          setLeft(minVal);
+          setRight(maxVal);
+          await new Promise(r => setTimeout(r, 150));
+        }
       }
 
-      chartContainerRef.current.style.width = `${tw}px`;
-      chartContainerRef.current.style.height = `${th}px`;
-      chartContainerRef.current.style.position = 'fixed';
-      chartContainerRef.current.style.top = '0';
-      chartContainerRef.current.style.left = '0';
-      chartContainerRef.current.style.zIndex = '100';
-      chartContainerRef.current.style.backgroundColor = 'white';
+      // recharts SVG를 직접 찾아서 캔버스에 그림
+      const svgEl = chartContainerRef.current.querySelector('svg');
+      if (!svgEl) throw new Error('SVG not found');
 
-      await new Promise(r => setTimeout(r, 800));
-      const du = await toPng(chartContainerRef.current, { quality: 1.0, backgroundColor: '#ffffff', width: tw, height: th });
+      // 원본 SVG의 실제 렌더 크기를 viewBox로 설정해야 올바르게 스케일됨
+      const svgRect = svgEl.getBoundingClientRect();
+      const srcW = svgRect.width || svgEl.clientWidth || tw;
+      const srcH = svgRect.height || svgEl.clientHeight || th;
 
-      chartContainerRef.current.setAttribute('style', os);
-      setLeft(ol); setRight(or);
+      const svgClone = svgEl.cloneNode(true) as SVGElement;
+      svgClone.setAttribute('width', String(tw));
+      svgClone.setAttribute('height', String(th));
+      svgClone.setAttribute('viewBox', `0 0 ${srcW} ${srcH}`);
+      svgClone.style.background = '#ffffff';
 
-      const link = document.createElement('a');
-      link.download = `${activeFile?.name.replace(/\.(asc|txt)$/i, '') || 'chart'}_${tw}x${th}.png`;
-      link.href = du;
-      link.click();
+      // 폰트 크기 일괄 적용
+      const fs = parseInt(downloadFontSize) || 14;
+      svgClone.querySelectorAll('text').forEach(t => {
+        t.style.fontSize = `${fs}px`;
+      });
+
+      const svgData = new XMLSerializer().serializeToString(svgClone);
+      const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+      const svgUrl = URL.createObjectURL(svgBlob);
+
+      const baseName = `${activeFile?.name.replace(/\.(asc|txt|xrdml)$/i, '') || 'chart'}_${tw}x${th}`;
+
+      if (downloadFormat === 'svg') {
+        const link = document.createElement('a');
+        link.download = `${baseName}.svg`;
+        link.href = svgUrl;
+        link.click();
+        URL.revokeObjectURL(svgUrl);
+      } else {
+        await new Promise<void>((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = tw;
+            canvas.height = th;
+            const ctx = canvas.getContext('2d')!;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, tw, th);
+            ctx.drawImage(img, 0, 0, tw, th);
+            URL.revokeObjectURL(svgUrl);
+
+            const mimeType = downloadFormat === 'jpg' ? 'image/jpeg' : 'image/png';
+            const quality = downloadFormat === 'jpg' ? 0.92 : 1.0;
+            const link = document.createElement('a');
+            link.download = `${baseName}.${downloadFormat}`;
+            link.href = canvas.toDataURL(mimeType, quality);
+            link.click();
+            resolve();
+          };
+          img.onerror = reject;
+          img.src = svgUrl;
+        });
+      }
+
+      setLeft(ol);
+      setRight(or);
     } catch (e) {
       console.error(e);
+      setLeft(ol);
+      setRight(or);
       alert('다운로드 오류');
     } finally {
       setIsDownloading(false);
@@ -546,6 +608,23 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
               {visibleReferenceMaterials.map((matId, index) => (allMaterialDefinitions[matId] || []).map((def, pIdx) => (
                 <ReferenceLine key={`${matId}-${pIdx}`} x={def.theoreticalPos || 0} stroke={getMaterialColor(index)} strokeWidth={1} strokeDasharray="3 3" strokeOpacity={0.6} label={{ value: def.plane ? `(${def.plane})` : '', position: 'top', fill: getMaterialColor(index), fontSize: 10, opacity: 0.8 }} />
               )))}
+              {/* Peak range overlays */}
+              {peakDefinitions.map(def => {
+                const isActive = def.plane === activePlane;
+                if (!def.range?.min || !def.range?.max) return null;
+                return (
+                  <ReferenceArea
+                    key={`range-${def.plane}`}
+                    x1={def.range.min}
+                    x2={def.range.max}
+                    fill={isActive ? "#3b82f6" : "#94a3b8"}
+                    fillOpacity={isActive ? 0.25 : 0.1}
+                    stroke={isActive ? "#3b82f6" : "#94a3b8"}
+                    strokeOpacity={isActive ? 0.6 : 0.2}
+                    strokeWidth={1}
+                  />
+                );
+              })}
               {refAreaLeft && refAreaRight && <ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill={mode === 'select' ? "#3b82f6" : "#8884d8"} fillOpacity={0.3} />}
               {gsFWHMData && (
                 <>
@@ -563,7 +642,7 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
       </div>
 
       {isCapturing && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[99999]">
+        <div className="capture-overlay fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[99999]">
           <div className="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center">
             <Download className="text-blue-600 animate-bounce mb-4" size={32} />
             <h3 className="text-xl font-bold mb-2">고해상도 최적화 중...</h3>
@@ -575,13 +654,88 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
 
       {showDownloadSettings && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowDownloadSettings(false)}>
-          <div className="bg-white rounded-xl p-6 w-96" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold">Download Settings</h3><button onClick={() => setShowDownloadSettings(false)}><X size={20} /></button></div>
-            <div className="space-y-4">
-              <label className="flex items-center gap-2"><input type="checkbox" checked={useCustomXAxis} onChange={e => setUseCustomXAxis(e.target.checked)} />Custom X-Range</label>
-              {useCustomXAxis && <div className="grid grid-cols-2 gap-2 pl-4"><input type="number" value={downloadXAxisMin} onChange={e => setDownloadXAxisMin(e.target.value)} placeholder="Min" className="p-2 border rounded" /><input type="number" value={downloadXAxisMax} onChange={e => setDownloadXAxisMax(e.target.value)} placeholder="Max" className="p-2 border rounded" /></div>}
-              <div className="grid grid-cols-2 gap-4"><input type="number" value={downloadWidth} onChange={e => setDownloadWidth(e.target.value)} placeholder="Width" className="p-2 border rounded" /><input type="number" value={downloadHeight} onChange={e => setDownloadHeight(e.target.value)} placeholder="Height" className="p-2 border rounded" /></div>
-              <div className="flex justify-end gap-2 pt-4"><button onClick={() => setShowDownloadSettings(false)} className="px-4 py-2 bg-slate-100 rounded">Cancel</button><button onClick={saveDownloadSettings} className="px-4 py-2 bg-blue-600 text-white rounded">Save</button></div>
+          <div className="bg-white rounded-xl p-6 w-[420px]" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-5">
+              <h3 className="text-lg font-bold">Download Settings</h3>
+              <button onClick={() => setShowDownloadSettings(false)}><X size={20} /></button>
+            </div>
+            <div className="space-y-5">
+
+              {/* 포맷 선택 */}
+              <div>
+                <p className="text-xs font-bold text-slate-500 uppercase mb-2">Format</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['png', 'jpg', 'svg'] as const).map(fmt => (
+                    <button
+                      key={fmt}
+                      onClick={() => setDownloadFormat(fmt)}
+                      className={`py-2 rounded-lg border text-sm font-bold uppercase transition-all ${downloadFormat === fmt ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 hover:border-blue-300'}`}
+                    >
+                      {fmt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className={`space-y-5 transition-opacity ${downloadFormat === 'svg' ? 'opacity-40 pointer-events-none' : ''}`}>
+                {/* 비율 선택 */}
+                <div>
+                  <p className="text-xs font-bold text-slate-500 uppercase mb-2">Aspect Ratio</p>
+                  <div className="grid grid-cols-4 gap-2">
+                    {ASPECT_RATIOS.map(r => (
+                      <button
+                        key={r.label}
+                        onClick={() => { setDownloadWidth(String(r.w)); setDownloadHeight(String(r.h)); }}
+                        className={`py-2 px-1 rounded-lg border text-sm font-bold transition-all flex flex-col items-center gap-0.5 ${downloadWidth === String(r.w) && downloadHeight === String(r.h) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 hover:border-blue-300'}`}
+                      >
+                        <span>{r.label}</span>
+                        <span className={`text-[9px] font-normal ${downloadWidth === String(r.w) && downloadHeight === String(r.h) ? 'text-blue-100' : 'text-slate-400'}`}>{r.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 해상도 직접 입력 */}
+                <div>
+                  <p className="text-xs font-bold text-slate-500 uppercase mb-2">Resolution (px)</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-slate-400 mb-1 block">Width</label>
+                      <input type="number" value={downloadWidth} onChange={e => setDownloadWidth(e.target.value)} className="w-full p-2 border rounded-lg text-sm" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-400 mb-1 block">Height</label>
+                      <input type="number" value={downloadHeight} onChange={e => setDownloadHeight(e.target.value)} className="w-full p-2 border rounded-lg text-sm" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* 폰트 크기 */}
+                <div>
+                  <p className="text-xs font-bold text-slate-500 uppercase mb-2">Font Size — {downloadFontSize}px</p>
+                  <input type="range" min="8" max="32" step="1" value={downloadFontSize} onChange={e => setDownloadFontSize(e.target.value)} className="w-full accent-blue-600" />
+                  <div className="flex justify-between text-xs text-slate-400 mt-1"><span>8px</span><span>32px</span></div>
+                </div>
+              </div>
+
+              {/* Custom X축 */}
+              <div>
+                <label className="flex items-center gap-2 text-sm font-medium text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={useCustomXAxis} onChange={e => setUseCustomXAxis(e.target.checked)} className="accent-blue-600" />
+                  Custom X-Range
+                </label>
+                {useCustomXAxis && (
+                  <div className="grid grid-cols-2 gap-3 mt-2 pl-5">
+                    <input type="number" value={downloadXAxisMin} onChange={e => setDownloadXAxisMin(e.target.value)} placeholder="Min 2θ" className="p-2 border rounded-lg text-sm" />
+                    <input type="number" value={downloadXAxisMax} onChange={e => setDownloadXAxisMax(e.target.value)} placeholder="Max 2θ" className="p-2 border rounded-lg text-sm" />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button onClick={() => setShowDownloadSettings(false)} className="px-4 py-2 bg-slate-100 rounded-lg text-sm">Cancel</button>
+                <button onClick={saveDownloadSettings} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold">Save</button>
+              </div>
             </div>
           </div>
         </div>

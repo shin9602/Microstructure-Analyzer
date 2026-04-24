@@ -23,6 +23,8 @@ export interface TCResult {
   referenceIntensity: number;
   ratio: number;
   tc: number;
+  peakTwoTheta: number;
+  isNearBoundary: boolean;
 }
 
 export interface ParsedFile {

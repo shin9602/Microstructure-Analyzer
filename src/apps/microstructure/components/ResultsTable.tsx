@@ -133,7 +133,12 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results, onReset }) => {
                       INTENSITY
                     </td>
                     {fileRes.results.map(r => (
-                      <td key={`int-${r.plane}`} className="px-4 py-3 text-center text-slate-600 font-mono border-r border-dashed border-slate-100 last:border-r-0">
+                      <td
+                        key={`int-${r.plane}`}
+                        className={`px-4 py-3 text-center font-mono border-r border-dashed border-slate-100 last:border-r-0 ${r.isNearBoundary ? 'bg-yellow-50 text-yellow-800' : 'text-slate-600'}`}
+                        title={r.isNearBoundary ? `Peak at ${r.peakTwoTheta.toFixed(3)}° is near range boundary — consider expanding the range` : undefined}
+                      >
+                        {r.isNearBoundary && <span className="mr-1">⚠</span>}
                         {r.rawIntensity.toFixed(2)}
                       </td>
                     ))}

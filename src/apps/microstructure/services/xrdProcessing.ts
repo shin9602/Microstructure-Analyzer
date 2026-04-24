@@ -254,6 +254,33 @@ export const extractMaxIntensity = (
 };
 
 /**
+ * Extracts peak info (intensity, position) within a range.
+ * Also flags if the peak is near the range boundary (within 10% of range width),
+ * which suggests the range may be too narrow.
+ */
+export const extractPeakInfo = (
+  data: XRDDataPoint[],
+  min2Theta: number,
+  max2Theta: number
+): { intensity: number; twoTheta: number; isNearBoundary: boolean } => {
+  const pointsInRange = data.filter(
+    (p) => p.twoTheta >= min2Theta && p.twoTheta <= max2Theta
+  );
+
+  if (pointsInRange.length === 0) return { intensity: 0, twoTheta: 0, isNearBoundary: false };
+
+  const peak = pointsInRange.reduce((a, b) => a.intensity > b.intensity ? a : b);
+  const rangeWidth = max2Theta - min2Theta;
+  const isNearBoundary =
+    rangeWidth > 0 && (
+      (peak.twoTheta - min2Theta) < rangeWidth * 0.1 ||
+      (max2Theta - peak.twoTheta) < rangeWidth * 0.1
+    );
+
+  return { intensity: peak.intensity, twoTheta: peak.twoTheta, isNearBoundary };
+};
+
+/**
  * Calculates Texture Coefficients.
  * Requires normalizationFactor to compute raw intensity for display.
  */
@@ -268,11 +295,14 @@ export const calculateTC = (
     measured: number;
     ref: number;
     ratio: number;
+    peakTwoTheta: number;
+    isNearBoundary: boolean;
   }[] = [];
 
   // 1. Extract Intensities
   for (const def of definitions) {
-    const measured = extractMaxIntensity(data, def.range.min, def.range.max);
+    const peakInfo = extractPeakInfo(data, def.range.min, def.range.max);
+    const measured = peakInfo.intensity;
     const ref = def.referenceIntensity;
 
     if (ref === 0) {
@@ -286,6 +316,8 @@ export const calculateTC = (
       measured,
       ref,
       ratio,
+      peakTwoTheta: peakInfo.twoTheta,
+      isNearBoundary: peakInfo.isNearBoundary,
     });
   }
 
@@ -319,6 +351,8 @@ export const calculateTC = (
       referenceIntensity: item.ref,
       ratio: item.ratio,
       tc,
+      peakTwoTheta: item.peakTwoTheta,
+      isNearBoundary: item.isNearBoundary,
     };
   });
 
