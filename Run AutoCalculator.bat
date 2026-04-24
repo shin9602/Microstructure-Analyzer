@@ -4,6 +4,8 @@ cd /d "%~dp0"
 set "ROOT=%~dp0"
 set "TOOLS=%ROOT%_tools"
 set "LOG=%ROOT%launcher.log"
+set "GITHUB_REPO=shin9602/Microstructure-Analyzer"
+set "VERSION_FILE=%ROOT%version.txt"
 
 if not exist "%TOOLS%" mkdir "%TOOLS%"
 
@@ -15,6 +17,60 @@ echo.
 echo  =============================
 echo    AutoCalculator Launcher
 echo  =============================
+echo.
+
+:: ====================================================
+:: 업데이트 체크
+:: ====================================================
+set "CURRENT_VER=없음"
+if exist "%VERSION_FILE%" set /p CURRENT_VER=<"%VERSION_FILE%"
+
+echo  버전 확인 중...
+powershell -NoProfile -Command ^
+    "[Net.ServicePointManager]::SecurityProtocol='Tls12';" ^
+    "try { $r = Invoke-RestMethod -Uri 'https://api.github.com/repos/%GITHUB_REPO%/releases/latest' -UseBasicParsing -TimeoutSec 5; Write-Output $r.tag_name } catch { Write-Output '' }" ^
+    > "%TEMP%\latest_ver.txt" 2>nul
+set /p LATEST_VER=<"%TEMP%\latest_ver.txt"
+del "%TEMP%\latest_ver.txt" >nul 2>&1
+
+if "%LATEST_VER%"=="" (
+    echo  [업데이트] 확인 실패 ^(인터넷 연결 확인^)
+    echo  현재 버전: %CURRENT_VER%
+) else if "%CURRENT_VER%"=="%LATEST_VER%" (
+    echo  [업데이트] 최신 버전입니다 ^(%CURRENT_VER%^)
+) else (
+    echo.
+    echo  *** 새 버전이 있습니다! ***
+    echo  현재: %CURRENT_VER%  →  최신: %LATEST_VER%
+    echo.
+    echo  지금 업데이트하시겠습니까?
+    echo  [Y] 업데이트 후 실행   [N] 그냥 실행
+    echo.
+    set /p DO_UPDATE= 선택 (Y/N):
+    if /i "!DO_UPDATE!"=="Y" (
+        echo.
+        echo  업데이트 중...
+        set "ZIP_FILE=%ROOT%_update.zip"
+        set "TEMP_DIR=%ROOT%_update_temp"
+        set "DOWNLOAD_URL=https://github.com/%GITHUB_REPO%/releases/download/%LATEST_VER%/AutoCalculator-%LATEST_VER%.zip"
+        powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; Invoke-WebRequest -Uri '!DOWNLOAD_URL!' -OutFile '!ZIP_FILE!' -UseBasicParsing"
+        if exist "!ZIP_FILE!" (
+            if exist "!TEMP_DIR!" rd /s /q "!TEMP_DIR!"
+            mkdir "!TEMP_DIR!"
+            powershell -NoProfile -Command "Expand-Archive -Path '!ZIP_FILE!' -DestinationPath '!TEMP_DIR!' -Force"
+            robocopy "!TEMP_DIR!" "%ROOT%" /E /XD node_modules _tools _update_temp /XF launcher.log error.log build_log.txt /NFL /NDL /NJH /NJS >nul 2>&1
+            echo %LATEST_VER%> "%VERSION_FILE%"
+            rd /s /q "!TEMP_DIR!" >nul 2>&1
+            del "!ZIP_FILE!" >nul 2>&1
+            echo  업데이트 완료! 앱을 다시 시작합니다...
+            timeout /t 2 >nul
+            start "" "%ROOT%START_HERE.bat"
+            exit
+        ) else (
+            echo  [오류] 다운로드 실패. 그냥 실행합니다.
+        )
+    )
+)
 echo.
 
 :: ====================================================
