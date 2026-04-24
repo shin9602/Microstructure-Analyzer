@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Create release zip
+        run: |
+          mkdir -p _release
+          rsync -a --exclude='node_modules' --exclude='_tools' --exclude='_release' \
+            --exclude='.git' --exclude='python' --exclude='launcher.log' \
+            --exclude='error.log' --exclude='build_log.txt' --exclude='_update.zip' \
+            --exclude='AutoCalculator-*.zip' \
+            . _release/
+          echo "${{ github.ref_name }}" > _release/version.txt
+          cd _release && zip -r ../AutoCalculator-${{ github.ref_name }}.zip .
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: AutoCalculator-${{ github.ref_name }}.zip
+          name: AutoCalculator ${{ github.ref_name }}
+          body: |
+            AutoCalculator ${{ github.ref_name }} 업데이트
