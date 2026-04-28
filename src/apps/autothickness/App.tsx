@@ -1097,6 +1097,49 @@ const App: React.FC<AppProps> = ({ onBack }) => {
         addToast('일괄 내보내기', '엑셀 리포트가 생성되었습니다.', 'success');
     };
 
+    // Line measurements bulk export
+    const handleLineExport = () => {
+        // Collect line measurements from all images (including current unsaved state)
+        const snapshot = imageList.map((entry, idx) => {
+            const meass = idx === currentImageIndex ? measurements : entry.measurements;
+            return { name: entry.name, measurements: meass };
+        });
+
+        const lineTypes = ['line', 'parallel'];
+        const rows: string[] = [];
+
+        snapshot.forEach(({ name, measurements: meass }) => {
+            const lines = meass.filter(m => lineTypes.includes(m.type));
+            lines.forEach((m, lineIdx) => {
+                const px = Math.sqrt(
+                    Math.pow(m.data.x2 - m.data.x1, 2) +
+                    Math.pow(m.data.y2 - m.data.y1, 2)
+                );
+                const real = calibrationManager.pixelsToReal(px);
+                const value = real !== null ? real.toFixed(4) : px.toFixed(2);
+                const unit = real !== null ? calibrationManager.unit : 'px';
+                const nameWithoutExt = name.replace(/\.[^/.]+$/, '');
+                rows.push(`${nameWithoutExt},${lineIdx + 1},${value},${unit}`);
+            });
+        });
+
+        if (rows.length === 0) {
+            addToast('내보내기 실패', '선 측정 데이터가 없습니다. 먼저 이미지에 선을 그어주세요.', 'error');
+            return;
+        }
+
+        let csv = '﻿'; // BOM
+        csv += '파일명,선 번호,두께,단위\n';
+        csv += rows.join('\n');
+
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `line_measurements_${new Date().toISOString().slice(0, 10)}.csv`;
+        link.click();
+        addToast('내보내기 완료', `${rows.length}개의 선 측정값을 다운로드했습니다.`, 'success');
+    };
+
     // Export
     const handleExport = () => {
         if (measurements.length === 0) {
@@ -1211,6 +1254,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                         onExport={handleExport}
                         onClear={handleClearAll}
                         onBatchAnalyze={handleBatchAnalyze}
+                        onLineExport={handleLineExport}
                         analysisMode={analysisMode}
                         onBrightnessChange={setBrightness}
                         onContrastChange={setContrast}

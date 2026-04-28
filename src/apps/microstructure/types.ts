@@ -33,6 +33,8 @@ export interface ParsedFile {
   data: XRDDataPoint[];
   normalizationFactor: number;
   twoThetaShift?: number;
+  yOffset?: number;
+  opacity?: number;
 }
 
 export interface WHPeakData {

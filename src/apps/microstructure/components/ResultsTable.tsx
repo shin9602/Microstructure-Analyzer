@@ -1,6 +1,6 @@
 import React from 'react';
 import type { FileResult } from '../types';
-import { Download, RefreshCw, FileSpreadsheet } from 'lucide-react';
+import { Download, RefreshCw, FileSpreadsheet, AlertTriangle } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface ResultsTableProps {
@@ -135,11 +135,13 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ results, onReset }) => {
                     {fileRes.results.map(r => (
                       <td
                         key={`int-${r.plane}`}
-                        className={`px-4 py-3 text-center font-mono border-r border-dashed border-slate-100 last:border-r-0 ${r.isNearBoundary ? 'bg-yellow-50 text-yellow-800' : 'text-slate-600'}`}
-                        title={r.isNearBoundary ? `Peak at ${r.peakTwoTheta.toFixed(3)}° is near range boundary — consider expanding the range` : undefined}
+                        className={`px-4 py-3 text-center font-mono border-r border-dashed border-slate-100 last:border-r-0 transition-colors ${r.isNearBoundary ? 'bg-red-50 text-red-600 font-bold' : 'text-slate-600'}`}
+                        title={r.isNearBoundary ? `⚠️ Peak at ${r.peakTwoTheta.toFixed(3)}° is too close to the boundary! Consider widening the range for better accuracy.` : undefined}
                       >
-                        {r.isNearBoundary && <span className="mr-1">⚠</span>}
-                        {r.rawIntensity.toFixed(2)}
+                        <div className="flex items-center justify-center gap-1">
+                          {r.isNearBoundary && <AlertTriangle size={14} className="text-red-500 fill-red-50" />}
+                          {r.rawIntensity.toFixed(2)}
+                        </div>
                       </td>
                     ))}
                   </tr>

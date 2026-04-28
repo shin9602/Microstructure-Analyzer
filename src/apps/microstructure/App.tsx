@@ -1,10 +1,10 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { ChevronDown, RotateCcw, Move, MousePointer2, ZoomIn, Info, Plus, Trash2, Save, Calculator, ArrowRight, UploadCloud, Activity, FileText, Menu, Home, BookOpen, Settings, AlertCircle, MousePointerClick, Ruler, BarChart3, GripHorizontal } from 'lucide-react';
+import { ZoomIn, Plus, Trash2, Calculator, UploadCloud, Activity, Menu, Home, Ruler, BarChart3, GripHorizontal } from 'lucide-react';
 
 import { MATERIALS } from './constants';
 import { AppStep, AnalysisMode } from './types';
-import type { PeakDefinition, FileResult, ParsedFile, MaterialPreset } from './types';
-import { parseXRDFile, parseXRDMLFile, calculateTC, definitionsToPreset, presetToDefinitions, calculateLatticeParameter, calculateCNRatioResult, findPeakInTwoThetaRange, calculateFWHM, calculateGrainSize, calculateWilliamsonHall } from './services/xrdProcessing';
+import type { PeakDefinition, FileResult, ParsedFile } from './types';
+import { parseXRDFile, parseXRDMLFile, calculateTC, presetToDefinitions, calculateLatticeParameter, calculateCNRatioResult, findPeakInTwoThetaRange, calculateFWHM, calculateGrainSize, calculateWilliamsonHall } from './services/xrdProcessing';
 import ChartViewer from './components/ChartViewer';
 import PeakConfigurator from './components/PeakConfigurator';
 import CNRatioConfigurator from './components/CNRatioConfigurator';
@@ -16,11 +16,6 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 const STORAGE_KEY = 'xrd_materials_v5';
 const CUSTOM_MATERIALS_KEY = 'xrd_custom_materials_v5';
 
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
-}
-
 interface AppProps {
   onBack?: () => void;
 }
@@ -30,6 +25,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
 
   // Materials Management State
   const [activeMaterialId, setActiveMaterialId] = useState<string>('Al2O3_alpha');
+  const [showMaterialDropdown, setShowMaterialDropdown] = useState(false);
   const [visibleReferenceMaterials, setVisibleReferenceMaterials] = useState<string[]>(['Al2O3_alpha']);
   const [customMaterials, setCustomMaterials] = useState<Record<string, { name: string }>>(() => {
     try {
@@ -103,8 +99,6 @@ const App: React.FC<AppProps> = ({ onBack }) => {
       }
 
       // 3. Force update if ranges are too wide (legacy 1.0 width, we want 0.5)
-      // Check Al2O3_alpha as a proxy
-      const alphaRef = MATERIALS['Al2O3_alpha'];
       const alphaDefs = next['Al2O3_alpha'];
       if (alphaDefs && alphaDefs.length > 0) {
         const firstRange = alphaDefs[0].range;
@@ -130,14 +124,10 @@ const App: React.FC<AppProps> = ({ onBack }) => {
   // UI State
   const [activePlane, setActivePlane] = useState<string | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [showHelpModal, setShowHelpModal] = useState(false);
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [newMaterialName, setNewMaterialName] = useState(''); // Kept for future use if needed
-  const [showNewMaterialModal, setShowNewMaterialModal] = useState(false); // Kept for future use
 
   // Layout Resizing State
-  const [gridHeight, setGridHeight] = useState<number>(560);
+  const [gridHeight, setGridHeight] = useState<number>(800);
   const [isResizingGrid, setIsResizingGrid] = useState(false);
 
   // Lifted mode state from ChartViewer
@@ -151,24 +141,21 @@ const App: React.FC<AppProps> = ({ onBack }) => {
   const [cnBatchResults, setCnBatchResults] = useState<any[]>([]);
   const [cnRange, setCnRange] = useState<{ min: number; max: number } | null>(null);
 
-  // Peak Shifting Logic
-  const shiftedFiles = useMemo(() => {
-    return files.map(file => {
-      const shift = file.twoThetaShift || 0;
-      if (shift === 0) return file;
-      return {
-        ...file,
-        data: file.data.map(p => ({
-          ...p,
-          twoTheta: p.twoTheta + shift
-        }))
-      };
-    });
-  }, [files]);
+  const [isOverlapMode, setIsOverlapMode] = useState(false);
+  const [selectedOverlapFileIds, setSelectedOverlapFileIds] = useState<string[]>([]);
+
+  // Use files directly
 
   const updateFileShift = (fileId: string, shift: number) => {
-    // Automatically apply to all files as per user request
-    setFiles(prev => prev.map(f => ({ ...f, twoThetaShift: shift })));
+    setFiles(prev => prev.map(f => f.id === fileId ? { ...f, twoThetaShift: shift } : f));
+  };
+
+  const updateFileYOffset = (fileId: string, offset: number) => {
+    setFiles(prev => prev.map(f => f.id === fileId ? { ...f, yOffset: offset } : f));
+  };
+
+  const updateFileOpacity = (fileId: string, opacity: number) => {
+    setFiles(prev => prev.map(f => f.id === fileId ? { ...f, opacity } : f));
   };
 
 
@@ -258,16 +245,20 @@ const App: React.FC<AppProps> = ({ onBack }) => {
   // Auto-recalculate WH analysis when excluded peaks change
   useEffect(() => {
     if (gsWHAnalysis && activeFileId) {
-      const file = shiftedFiles.find(f => f.id === activeFileId);
+      const file = files.find(f => f.id === activeFileId);
       if (file) {
-        // Pass all definitions and the excluded set
-        const whResult = calculateWilliamsonHall(activeDefinitions, file.data, lambda, kFactor, gsWHExcludedPeaks);
+        // Apply shift manually for calculation
+        const shift = file.twoThetaShift ?? 0;
+        const shiftedData = shift
+          ? file.data.map(p => ({ ...p, twoTheta: p.twoTheta + shift }))
+          : file.data;
+        const whResult = calculateWilliamsonHall(activeDefinitions, shiftedData, lambda, kFactor, gsWHExcludedPeaks);
         if (whResult) {
           setGsWHAnalysis(whResult);
         }
       }
     }
-  }, [gsWHExcludedPeaks, shiftedFiles, activeFileId]);
+  }, [gsWHExcludedPeaks, files, activeFileId]);
 
   // Load from storage on mount (optional, or rely on initial state logic if we want to persist user edits)
   // For now, let's stick to the initialized state from constants to ensure new constants are picked up,
@@ -352,21 +343,6 @@ const App: React.FC<AppProps> = ({ onBack }) => {
     });
   }, [activeMaterialId]);
 
-  const updateDefinition = useCallback((oldPlane: string, field: 'plane' | 'referenceIntensity' | 'theoreticalPos', value: string | number) => {
-    setMaterialDefinitions(prev => {
-      const currentDefs = prev[activeMaterialId];
-      const newDefs = currentDefs.map(def => {
-        if (def.plane === oldPlane) {
-          if (field === 'plane' && activePlane === oldPlane) {
-            setActivePlane(value as string);
-          }
-          return { ...def, [field]: value };
-        }
-        return def;
-      });
-      return { ...prev, [activeMaterialId]: newDefs };
-    });
-  }, [activeMaterialId, activePlane]);
 
   const addPeak = useCallback(() => {
 
@@ -445,9 +421,11 @@ const App: React.FC<AppProps> = ({ onBack }) => {
       }
     } else if (analysisMode === AnalysisMode.CN_RATIO) {
       if (activeFileId) {
-        const file = shiftedFiles.find(f => f.id === activeFileId);
+        const file = files.find(f => f.id === activeFileId);
         if (file) {
-          const peakPos = findPeakInTwoThetaRange(file.data, min, max);
+          const shift = file.twoThetaShift || 0;
+          const shiftedData = shift ? file.data.map(p => ({ ...p, twoTheta: p.twoTheta + shift })) : file.data;
+          const peakPos = findPeakInTwoThetaRange(shiftedData, min, max);
           if (peakPos !== null) {
             setCnTwoTheta(peakPos);
           } else {
@@ -463,13 +441,15 @@ const App: React.FC<AppProps> = ({ onBack }) => {
       }
     } else if (analysisMode === AnalysisMode.GRAIN_SIZE) {
       if (activeFileId) {
-        const file = shiftedFiles.find(f => f.id === activeFileId);
+        const file = files.find(f => f.id === activeFileId);
         if (file) {
-          const res = calculateFWHM(file.data, min, max);
+          const shift = file.twoThetaShift || 0;
+          const shiftedData = shift ? file.data.map(p => ({ ...p, twoTheta: p.twoTheta + shift })) : file.data;
+          const res = calculateFWHM(shiftedData, min, max);
           if (res) {
             setGsFWHMData(res);
             setCnTwoTheta(res.peak2Theta); // Pointer position for consistency
-
+ 
             // Perform batch calculation
             const batch = handleBatchCalculateGS(min, max);
             setGsBatchResults(batch);
@@ -481,9 +461,12 @@ const App: React.FC<AppProps> = ({ onBack }) => {
     }
   };
 
+
   const handleBatchCalculateGS = (min: number, max: number) => {
-    return shiftedFiles.map(file => {
-      const res = calculateFWHM(file.data, min, max);
+    return files.map(file => {
+      const shift = file.twoThetaShift || 0;
+      const shiftedData = shift ? file.data.map(p => ({ ...p, twoTheta: p.twoTheta + shift })) : file.data;
+      const res = calculateFWHM(shiftedData, min, max);
       if (!res) return { fileId: file.id, filename: file.name, status: 'Error' };
 
       const grainSize = calculateGrainSize(kFactor, lambda, res.fwhm, res.peak2Theta);
@@ -500,8 +483,10 @@ const App: React.FC<AppProps> = ({ onBack }) => {
   };
 
   const handleBatchCalculateCN = (min2Theta: number, max2Theta: number) => {
-    const batchResults = shiftedFiles.map(file => {
-      const peakPos = findPeakInTwoThetaRange(file.data, min2Theta, max2Theta);
+    const batchResults = files.map(file => {
+      const shift = file.twoThetaShift || 0;
+      const shiftedData = shift ? file.data.map(p => ({ ...p, twoTheta: p.twoTheta + shift })) : file.data;
+      const peakPos = findPeakInTwoThetaRange(shiftedData, min2Theta, max2Theta);
       if (peakPos === null) return { fileId: file.id, filename: file.name, a: 0, c: 0, n: 0, status: 'Error' };
 
       const a = calculateLatticeParameter(lambda, 1, 1, 1, peakPos);
@@ -544,7 +529,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
       const batch = handleBatchCalculateCN(cnRange.min, cnRange.max);
       setCnBatchResults(batch);
     }
-  }, [lambda, shiftedFiles]);
+  }, [lambda, files]);
 
   // Re-calculate Grain Size batch when parameters change
   useEffect(() => {
@@ -552,7 +537,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
       const batch = handleBatchCalculateGS(gsRange.min, gsRange.max);
       setGsBatchResults(batch);
     }
-  }, [lambda, kFactor, shiftedFiles]);
+  }, [lambda, kFactor, files]);
 
   // --- File Handlers ---
 
@@ -597,6 +582,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
               const sortedFiles = [...newFiles].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
               setFiles(sortedFiles);
               setActiveFileId(sortedFiles[0].id);
+              setSelectedOverlapFileIds([sortedFiles[0].id]);
               setStep(AppStep.CONFIGURE);
             }
             if (errors.length > 0) {
@@ -636,8 +622,10 @@ const App: React.FC<AppProps> = ({ onBack }) => {
 
   const handleCalculate = useCallback(() => {
     try {
-      const batchResults: FileResult[] = shiftedFiles.map(file => {
-        const tcs = calculateTC(activeDefinitions, file.data, file.normalizationFactor, formula);
+      const batchResults: FileResult[] = files.map(file => {
+        const shift = file.twoThetaShift || 0;
+        const shiftedData = shift ? file.data.map(p => ({ ...p, twoTheta: p.twoTheta + shift })) : file.data;
+        const tcs = calculateTC(activeDefinitions, shiftedData, file.normalizationFactor, formula);
 
         return {
           fileId: file.id,
@@ -653,7 +641,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
       const errorMessage = err instanceof Error ? err.message : String(err);
       setError('Calculation failed: ' + errorMessage);
     }
-  }, [shiftedFiles, activeDefinitions, formula]);
+  }, [files, activeDefinitions, formula]);
 
   const handleReset = () => {
     setStep(AppStep.UPLOAD);
@@ -687,15 +675,15 @@ const App: React.FC<AppProps> = ({ onBack }) => {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-blue-100">
       {/* Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
+        <div className="max-w-[1600px] mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="relative" ref={menuRef}>
               <button
                 onClick={() => setIsMenuOpen(!isMenuOpen)}
-                className={`p-2 rounded-lg transition-colors ${isMenuOpen ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}
+                className={`p-2 rounded-lg transition-all ${isMenuOpen ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}
               >
                 <Menu size={24} />
               </button>
@@ -703,7 +691,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
               {onBack && (
                 <button
                   onClick={onBack}
-                  className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 transition-colors"
+                  className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 transition-all ml-1"
                   title="Back to Launcher"
                 >
                   <Home size={24} />
@@ -711,67 +699,38 @@ const App: React.FC<AppProps> = ({ onBack }) => {
               )}
 
               {isMenuOpen && (
-                <div className="absolute top-full left-0 mt-2 w-72 bg-white rounded-xl shadow-xl border border-slate-100 py-2 z-50 animate-fade-in">
-                  <div className="px-4 py-2 border-b border-slate-50 mb-1">
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Analysis Methods</p>
+                <div className="absolute top-full left-0 mt-2 w-80 bg-white rounded-xl shadow-2xl border border-slate-100 py-2 z-50 animate-in fade-in slide-in-from-top-1 duration-200">
+                  <div className="px-4 py-1.5 border-b border-slate-50 mb-1">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Analysis Methods</p>
                   </div>
 
-                  <button
-                    className={`w-full text-left px-4 py-3 flex items-center gap-3 transition-colors ${analysisMode === AnalysisMode.TC ? 'bg-blue-50 text-blue-700 border-l-4 border-blue-600' : 'hover:bg-slate-50 text-slate-600'}`}
-                    onClick={() => {
-                      setAnalysisMode(AnalysisMode.TC);
-                      setIsMenuOpen(false);
-                      setChartMode('pan');
-                    }}
-                  >
-                    <div className="bg-white p-1.5 rounded-md shadow-sm">
-                      <Calculator size={18} className={analysisMode === AnalysisMode.TC ? "text-blue-600" : "text-slate-400"} />
-                    </div>
-                    <div>
-                      <p className="font-bold text-sm">TC Calculator</p>
-                      <p className="text-[10px] text-blue-500 font-medium">Texture Coefficient Analysis</p>
-                    </div>
-                  </button>
-
-                  <button
-                    className={`w-full text-left px-4 py-3 flex items-center gap-3 transition-colors mt-1 ${analysisMode === AnalysisMode.GRAIN_SIZE ? 'bg-blue-50 text-blue-700 border-l-4 border-blue-600' : 'hover:bg-slate-50 text-slate-600'}`}
-                    onClick={() => {
-                      setAnalysisMode(AnalysisMode.GRAIN_SIZE);
-                      setIsMenuOpen(false);
-                      setChartMode('select');
-                    }}
-                  >
-                    <div className="bg-white p-1.5 rounded-md shadow-sm">
-                      <Ruler size={18} className={analysisMode === AnalysisMode.GRAIN_SIZE ? "text-blue-600" : "text-slate-400"} />
-                    </div>
-                    <div>
-                      <p className="font-bold text-sm">Grain Size Calculator</p>
-                      <p className="text-[10px] text-blue-500 font-medium">FWHM & Scherrer Analysis</p>
-                    </div>
-                  </button>
-
-                  <button
-                    className={`w-full text-left px-4 py-3 flex items-center gap-3 transition-colors mt-1 ${analysisMode === AnalysisMode.CN_RATIO ? 'bg-blue-50 text-blue-700 border-l-4 border-blue-600' : 'hover:bg-slate-50 text-slate-600'}`}
-                    onClick={() => {
-                      setAnalysisMode(AnalysisMode.CN_RATIO);
-                      setIsMenuOpen(false);
-                      setChartMode('select');
-                      if (MATERIALS['TiCN']) {
-                        setActiveMaterialId('TiCN');
-                        if (!visibleReferenceMaterials.includes('TiCN')) {
-                          setVisibleReferenceMaterials(prev => [...prev, 'TiCN']);
+                  {[
+                    { id: AnalysisMode.TC, name: 'TC Calculator', sub: 'Texture Coefficient Analysis', icon: Calculator, color: 'blue' },
+                    { id: AnalysisMode.GRAIN_SIZE, name: 'Grain Size', sub: 'FWHM & Scherrer Analysis', icon: Ruler, color: 'purple' },
+                    { id: AnalysisMode.CN_RATIO, name: 'C/N Ratio', sub: 'Lattice & Composition', icon: Activity, color: 'emerald' }
+                  ].map(mode => (
+                    <button
+                      key={mode.id}
+                      className={`w-full text-left px-4 py-2.5 flex items-center gap-3 transition-all ${analysisMode === mode.id ? `bg-${mode.color}-50 text-${mode.color}-700 border-l-4 border-${mode.color}-600` : 'hover:bg-slate-50 text-slate-600'}`}
+                      onClick={() => {
+                        setAnalysisMode(mode.id as AnalysisMode);
+                        setIsMenuOpen(false);
+                        setChartMode(mode.id === AnalysisMode.TC ? 'pan' : 'select');
+                        if (mode.id === AnalysisMode.CN_RATIO && MATERIALS['TiCN']) {
+                          setActiveMaterialId('TiCN');
+                          if (!visibleReferenceMaterials.includes('TiCN')) setVisibleReferenceMaterials(p => [...p, 'TiCN']);
                         }
-                      }
-                    }}
-                  >
-                    <div className="bg-white p-1.5 rounded-md shadow-sm">
-                      <Calculator size={18} className={analysisMode === AnalysisMode.CN_RATIO ? "text-blue-600" : "text-slate-400"} />
-                    </div>
-                    <div>
-                      <p className="font-bold text-sm">C/N ratio Calculator</p>
-                      <p className="text-[10px] text-blue-500 font-medium">Lattice & Composition Analysis</p>
-                    </div>
-                  </button>
+                      }}
+                    >
+                      <div className={`p-1.5 rounded-md shadow-sm bg-white`}>
+                        <mode.icon size={18} className={analysisMode === mode.id ? `text-${mode.color}-600` : 'text-slate-400'} />
+                      </div>
+                      <div>
+                        <p className="font-bold text-sm tracking-tight">{mode.name}</p>
+                        <p className={`text-[10px] font-medium text-${mode.color}-500`}>{mode.sub}</p>
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
@@ -779,29 +738,45 @@ const App: React.FC<AppProps> = ({ onBack }) => {
             <div
               className="flex items-center gap-3 cursor-pointer select-none group"
               onClick={handleGoHome}
-              title="Reset and go to Home"
             >
-              <div className="bg-blue-600 p-2 rounded-lg group-hover:bg-blue-700 transition-colors">
+              <div className="bg-blue-600 p-2 rounded-lg shadow-md group-hover:bg-blue-700 transition-all">
                 <Activity className="text-white" size={20} />
               </div>
-              <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-700 to-blue-500 group-hover:from-blue-800 group-hover:to-blue-600">
-                Microstructure Analyzer
-              </h1>
-              <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-bold border border-slate-200">v5.1</span>
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg font-bold text-slate-800 tracking-tight">
+                  Microstructure Analyzer
+                </h1>
+                <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">v5.4</span>
+              </div>
             </div>
           </div>
+
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
-              <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Active Material</span>
-              <select
-                value={activeMaterialId}
-                onChange={(e) => handleMaterialChange(e.target.value)}
-                className="bg-transparent text-sm font-semibold text-slate-700 focus:outline-none cursor-pointer"
+            <div className="relative flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Active Material</span>
+              <button
+                onClick={() => setShowMaterialDropdown(v => !v)}
+                className="text-sm font-bold text-slate-700 outline-none cursor-pointer hover:text-blue-600 transition-colors flex items-center gap-1"
               >
-                {Object.entries({ ...MATERIALS, ...customMaterials }).map(([key, mat]) => (
-                  <option key={key} value={key}>{mat.name}</option>
-                ))}
-              </select>
+                {({ ...MATERIALS, ...customMaterials })[activeMaterialId]?.name ?? activeMaterialId}
+                <svg width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-slate-400"><path d="M1 1l4 4 4-4"/></svg>
+              </button>
+              {showMaterialDropdown && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowMaterialDropdown(false)} />
+                  <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-50 min-w-[220px] py-1">
+                    {Object.entries({ ...MATERIALS, ...customMaterials }).map(([key, mat]) => (
+                      <button
+                        key={key}
+                        onClick={() => { handleMaterialChange(key); setShowMaterialDropdown(false); }}
+                        className={`w-full text-left px-4 py-2 text-sm font-medium transition-colors ${activeMaterialId === key ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-slate-50'}`}
+                      >
+                        {mat.name}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
             <button
               onClick={handleAddMaterial}
@@ -823,14 +798,23 @@ const App: React.FC<AppProps> = ({ onBack }) => {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {successMsg && (
-          <div className="mb-6 bg-emerald-50 border-l-4 border-emerald-500 p-4 rounded-md shadow-sm flex items-start animate-fade-in">
+      <main className="max-w-[1600px] mx-auto px-6 py-8">
+        {error && (
+          <div className="mb-6 bg-red-50 border border-red-200 p-4 rounded-xl shadow-sm flex items-start animate-fade-in">
             <div className="flex-1">
-              <h3 className="text-emerald-800 font-medium">Success</h3>
-              <p className="text-emerald-700 text-sm mt-1">{successMsg}</p>
+              <h3 className="text-red-800 font-bold text-sm tracking-tight">Error</h3>
+              <p className="text-red-700 text-xs mt-1">{error}</p>
             </div>
-            <button onClick={() => setSuccessMsg(null)} className="text-emerald-500 font-bold hover:text-emerald-700">&times;</button>
+            <button onClick={() => setError(null)} className="text-red-500 hover:text-red-700">&times;</button>
+          </div>
+        )}
+        {successMsg && (
+          <div className="mb-6 bg-emerald-50 border border-emerald-200 p-4 rounded-xl shadow-sm flex items-start animate-fade-in">
+            <div className="flex-1">
+              <h3 className="text-emerald-800 font-bold text-sm tracking-tight">Success</h3>
+              <p className="text-emerald-700 text-xs mt-1">{successMsg}</p>
+            </div>
+            <button onClick={() => setSuccessMsg(null)} className="text-emerald-500 hover:text-emerald-700">&times;</button>
           </div>
         )}
 
@@ -938,14 +922,14 @@ const App: React.FC<AppProps> = ({ onBack }) => {
               <div
               ref={gridRef}
               className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-1 overflow-hidden transition-none"
-              style={{ height: `${gridHeight}px` }}
+              style={{ height: `${gridHeight || 600}px` }}
             >
               {/* Left Column: Shared Chart Area */}
               <div ref={leftColRef} className="lg:col-span-2 relative h-full overflow-hidden">
-                <div className={`h-full bg-white rounded-2xl border-2 flex flex-col overflow-hidden ${analysisMode === AnalysisMode.TC ? 'border-blue-100 shadow-blue-50/50' : analysisMode === AnalysisMode.CN_RATIO ? 'border-emerald-100 shadow-emerald-50/50' : 'border-purple-100 shadow-purple-50/50'} shadow-lg`}>
-                  <div className="flex-1 bg-white h-full min-h-0">
+                <div className={`h-full bg-white rounded-2xl border flex flex-col overflow-hidden shadow-sm ${analysisMode === AnalysisMode.TC ? 'border-blue-100' : analysisMode === AnalysisMode.CN_RATIO ? 'border-emerald-100' : 'border-purple-100'}`}>
+                  <div className="flex-1 bg-white h-full min-h-[500px]">
                     <ChartViewer
-                      files={shiftedFiles}
+                      files={files}
                       activeFileId={activeFileId}
                       onFileChange={setActiveFileId}
                       peakDefinitions={activeDefinitions}
@@ -965,6 +949,16 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                       chartFixedRange={cnFixedRange}
                       twoThetaShift={files.find(f => f.id === activeFileId)?.twoThetaShift || 0}
                       onUpdateShift={(shift) => updateFileShift(activeFileId!, shift)}
+                      onUpdateFileYOffset={updateFileYOffset}
+                      onUpdateFileOpacity={updateFileOpacity}
+                      isOverlapMode={isOverlapMode}
+                      selectedOverlapFileIds={selectedOverlapFileIds}
+                      onToggleOverlap={() => setIsOverlapMode(!isOverlapMode)}
+                      onToggleFileSelection={(id) => {
+                        setSelectedOverlapFileIds(prev =>
+                          prev.includes(id) ? prev.filter(fid => fid !== id) : [...prev, id]
+                        );
+                      }}
                     />
                   </div>
                 </div>
@@ -1046,20 +1040,16 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                   )}
                 </div>
 
-                {/* Shared Overlay Settings (Reference Visibility) - Accessible in both but styled differently */}
-                <div className={`h-32 bg-white rounded-xl shadow-sm border overflow-y-auto custom-scrollbar transition-colors ${analysisMode === AnalysisMode.TC ? 'border-slate-200' : analysisMode === AnalysisMode.CN_RATIO ? 'border-emerald-100' : 'border-purple-100'}`}>
-                  <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2 sticky top-0 bg-white px-4 py-3 border-b border-slate-100 z-10">
-                    <Settings size={16} className={analysisMode === AnalysisMode.TC ? "text-slate-500" : analysisMode === AnalysisMode.CN_RATIO ? "text-emerald-500" : "text-purple-500"} />
+                {/* Shared Overlay Settings (Reference Visibility) */}
+                <div className={`h-40 bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col ${analysisMode === AnalysisMode.TC ? 'border-slate-200' : analysisMode === AnalysisMode.CN_RATIO ? 'border-emerald-100' : 'border-purple-100'}`}>
+                  <h3 className="text-[11px] font-black text-slate-500 uppercase tracking-widest px-4 py-3 bg-slate-50 border-b border-slate-100">
                     Reference Overlays
                   </h3>
-                  <div className="flex flex-col gap-2 p-4">
+                  <div className="flex-1 overflow-y-auto px-4 py-2 space-y-1 custom-scrollbar">
                     {Object.entries({ ...MATERIALS, ...customMaterials }).map(([key, mat]) => (
-                      <label key={key} className="flex items-center gap-2 cursor-pointer group select-none hover:bg-slate-50 p-1 rounded transition-colors">
-                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${visibleReferenceMaterials.includes(key)
-                          ? (analysisMode === AnalysisMode.TC ? 'bg-blue-600 border-blue-600' : 'bg-emerald-600 border-emerald-600')
-                          : 'border-slate-300 group-hover:border-blue-400'
-                          }`}>
-                          {visibleReferenceMaterials.includes(key) && <div className="w-2 h-2 bg-white rounded-sm" />}
+                      <label key={key} className={`flex items-center gap-2 px-2 py-1.5 rounded-lg transition-all cursor-pointer group ${visibleReferenceMaterials.includes(key) ? 'bg-slate-50' : 'hover:bg-slate-50'}`}>
+                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${visibleReferenceMaterials.includes(key) ? (analysisMode === AnalysisMode.TC ? 'bg-blue-600 border-blue-600' : analysisMode === AnalysisMode.CN_RATIO ? 'bg-emerald-600 border-emerald-600' : 'bg-purple-600 border-purple-600') : 'border-slate-300'}`}>
+                          {visibleReferenceMaterials.includes(key) && <div className="w-1.5 h-1.5 bg-white rounded-full" />}
                         </div>
                         <input
                           type="checkbox"
@@ -1067,9 +1057,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                           checked={visibleReferenceMaterials.includes(key)}
                           onChange={() => toggleReferenceVisibility(key)}
                         />
-                        <span className={`text-sm ${visibleReferenceMaterials.includes(key) ? 'text-slate-900 font-medium' : 'text-slate-500'}`}>
-                          {mat.name}
-                        </span>
+                        <span className={`text-xs font-semibold ${visibleReferenceMaterials.includes(key) ? 'text-slate-900' : 'text-slate-500'}`}>{mat.name}</span>
                       </label>
                     ))}
                   </div>

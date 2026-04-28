@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-    FolderOpen, Settings, Info, Minus, Square, TrendingUp, Columns, MousePointer2, Layers, Microscope, ScanLine
+    FolderOpen, Settings, Info, Minus, Square, TrendingUp, Columns, MousePointer2, Layers, Microscope, ScanLine, Download
 } from 'lucide-react';
 import type { CalibrationManager } from '../services/CalibrationManager';
 import type { ImageManager } from '../services/ImageManager';
@@ -15,6 +15,7 @@ interface SidebarProps {
     onExport: () => void;
     onClear: () => void;
     onBatchAnalyze: () => void;
+    onLineExport: () => void;
     analysisMode: string;
     onBrightnessChange: (v: number) => void;
     onContrastChange: (v: number) => void;
@@ -41,7 +42,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({
     currentTool, setTool, calibrationManager,
     onLoadImage, onCalibrationClick, onAnalysisModeChange,
-    onExport, onClear, onBatchAnalyze, analysisMode,
+    onExport, onClear, onBatchAnalyze, onLineExport, analysisMode,
     onBrightnessChange, onContrastChange, brightness, contrast,
     onCalibrationFileLoad,
     onUndoClick, onRedoClick,
@@ -224,6 +225,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 onClick={onBatchAnalyze}
                             >
                                 <Layers size={16} /> 일괄 자동분석 (전체)
+                            </button>
+
+                            <button
+                                className="btn-primary bg-blue-600 hover:bg-blue-700 border-none py-2 px-4 rounded-lg flex items-center justify-center gap-2 w-full text-white shadow-sm"
+                                onClick={onLineExport}
+                            >
+                                <Download size={16} /> 선 측정 일괄 다운로드
                             </button>
                         </>
                     )}

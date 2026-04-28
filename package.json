@@ -1,7 +1,7 @@
 {
   "name": "autocalulator-v1-0-0",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.4",
   "type": "module",
   "scripts": {
     "dev": "vite --open",

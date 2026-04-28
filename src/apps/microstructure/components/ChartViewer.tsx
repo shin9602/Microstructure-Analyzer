@@ -10,9 +10,10 @@ import {
   ReferenceArea,
   ReferenceLine,
   ReferenceDot,
+  Legend
 } from 'recharts';
 import type { PeakDefinition, ParsedFile } from '../types';
-import { ChevronDown, RotateCcw, Move, MousePointer2, ZoomIn, Download, Settings2, X } from 'lucide-react';
+import { ChevronDown, RotateCcw, Move, MousePointer2, ZoomIn, Download, Settings2, X, Layers, Check, Plus } from 'lucide-react';
 
 interface ChartViewerProps {
   files: ParsedFile[];
@@ -37,6 +38,12 @@ interface ChartViewerProps {
   chartFixedRange?: [number, number] | null;
   twoThetaShift: number;
   onUpdateShift: (shift: number) => void;
+  onUpdateFileYOffset?: (fileId: string, offset: number) => void;
+  onUpdateFileOpacity?: (fileId: string, opacity: number) => void;
+  isOverlapMode?: boolean;
+  selectedOverlapFileIds?: string[];
+  onToggleOverlap?: () => void;
+  onToggleFileSelection?: (id: string) => void;
 }
 
 type InteractionMode = 'pan' | 'select' | 'zoom';
@@ -48,7 +55,6 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
   peakDefinitions,
   activePlane,
   onRangeSelect,
-  onClearSelection,
   visibleReferenceMaterials = [],
   allMaterialDefinitions = {},
   mode,
@@ -57,7 +63,13 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
   gsFWHMData = null,
   chartFixedRange = null,
   twoThetaShift,
-  onUpdateShift
+  onUpdateShift,
+  onUpdateFileYOffset,
+  onUpdateFileOpacity,
+  isOverlapMode = false,
+  selectedOverlapFileIds = [],
+  onToggleOverlap,
+  onToggleFileSelection
 }) => {
   const dragStartRef = useRef<number | null>(null);
   const dragEndRef = useRef<number | null>(null);
@@ -70,36 +82,19 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
   // Zoom State
   const [left, setLeft] = useState<string | number>(chartFixedRange ? chartFixedRange[0] : 'dataMin');
   const [right, setRight] = useState<number | 'dataMin' | 'dataMax'>(chartFixedRange ? chartFixedRange[1] : 'dataMax');
-  const [top, setTop] = useState<string | number>('dataMax');
-  const [bottom, setBottom] = useState<string | number>('dataMin');
 
-  const [chartSize, setChartSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  const [isRawMode, setIsRawMode] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
 
   // Panning State
   const isDraggingRef = useRef(false);
   const [isPanning, setIsPanning] = useState(false); // To disable tooltip
-  const [isRawMode, setIsRawMode] = useState(false); // Default 1/5 sampled for performance
   const dragStartViewRef = useRef<{ left: number, right: number } | null>(null);
   const dragStartPosXRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
 
   const ABS_MIN = 20;
   const ABS_MAX = 130;
-
-  // Track container size
-  useEffect(() => {
-    if (!chartContainerRef.current) return;
-    const updateSize = () => {
-      if (chartContainerRef.current) {
-        const { width, height } = chartContainerRef.current.getBoundingClientRect();
-        setChartSize({ width: Math.round(width), height: Math.round(height) });
-      }
-    };
-    updateSize();
-    const resizeObserver = new ResizeObserver(updateSize);
-    resizeObserver.observe(chartContainerRef.current);
-    return () => resizeObserver.disconnect();
-  }, []);
 
   // Sync with fixed range
   useLayoutEffect(() => {
@@ -110,8 +105,6 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
       setLeft('dataMin');
       setRight('dataMax');
     }
-    setTop('dataMax');
-    setBottom('dataMin');
     setRefAreaLeft(null);
     setRefAreaRight(null);
     dragStartRef.current = null;
@@ -128,11 +121,13 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
   const [showDownloadSettings, setShowDownloadSettings] = useState(false);
   const [downloadXAxisMin, setDownloadXAxisMin] = useState<string>('');
   const [downloadXAxisMax, setDownloadXAxisMax] = useState<string>('');
+  const [isDraggingSlider, setIsDraggingSlider] = useState(false);
   const [useCustomXAxis, setUseCustomXAxis] = useState(false);
   const [downloadWidth, setDownloadWidth] = useState<string>('1920');
   const [downloadHeight, setDownloadHeight] = useState<string>('1080');
   const [downloadFontSize, setDownloadFontSize] = useState<string>('14');
   const [downloadFormat, setDownloadFormat] = useState<'png' | 'jpg' | 'svg'>('png');
+  const [showFileSelector, setShowFileSelector] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem('xrd_download_settings');
@@ -166,22 +161,49 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
   };
 
   const activeFile = files.find(f => f.id === activeFileId) || files[0];
-  const data = activeFile?.data || [];
-
+  
   // ⚡ Optimization: Level of Detail (LOD)
-  // Create a downsampled dataset for smooth interaction
-  const downsampledData = useMemo(() => {
-    if (data.length < 1000) return data;
-    const step = 2;
-    const sampled = [];
-    for (let i = 0; i < data.length; i += step) {
-      sampled.push(data[i]);
-    }
-    if (data.length % step !== 0) sampled.push(data[data.length - 1]);
-    return sampled;
-  }, [data]);
+  const activeDisplayData = useMemo(() => {
+    const rawData = activeFile?.data || [];
+    const offset = activeFile?.yOffset || 0;
+    const step = isRawMode ? 1 : 3;
 
-  const activeDisplayData = isRawMode ? data : downsampledData;
+    const sampled = [];
+    for (let i = 0; i < rawData.length; i += step) {
+      const p = rawData[i];
+      sampled.push({
+        ...p,
+        twoTheta: p.twoTheta + twoThetaShift,
+        intensity: Math.max(0, p.intensity + offset)
+      });
+    }
+    return sampled;
+  }, [activeFile, isRawMode, twoThetaShift]);
+  
+  // ⚡ Optimization: Downsample all selected files for Overlap Mode
+  const overlapDatasets = useMemo(() => {
+    if (!isOverlapMode) return [];
+
+    const step = isRawMode ? 1 : 3;
+
+    return files
+      .filter(f => selectedOverlapFileIds.includes(f.id))
+      .map(file => {
+        const shift = file.twoThetaShift || 0;
+        const offset = file.yOffset || 0;
+        const processedData = file.data;
+        const sampled = [];
+        for (let i = 0; i < processedData.length; i += step) {
+          const p = processedData[i];
+          sampled.push({ 
+            ...p, 
+            twoTheta: p.twoTheta + shift,
+            intensity: Math.max(0, p.intensity + offset)
+          });
+        }
+        return { id: file.id, name: file.name, data: sampled };
+      });
+  }, [isOverlapMode, files, selectedOverlapFileIds, isRawMode]);
 
   // Global styles
   useEffect(() => {
@@ -222,14 +244,15 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
         let currentRight = right;
 
         if (typeof currentLeft !== 'number' || typeof currentRight !== 'number') {
-          currentLeft = data[0]?.twoTheta || 20;
-          currentRight = data[data.length - 1]?.twoTheta || 130;
+          currentLeft = activeDisplayData[0]?.twoTheta || 20;
+          currentRight = activeDisplayData[activeDisplayData.length - 1]?.twoTheta || 130;
           setLeft(currentLeft);
           setRight(currentRight);
         }
 
         isDraggingRef.current = true;
         setIsPanning(true);
+        setIsDraggingSlider(true);
         dragStartViewRef.current = { left: currentLeft as number, right: currentRight as number };
         dragStartPosXRef.current = e.clientX;
         document.body.classList.add('grabbing-active');
@@ -266,6 +289,7 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
     const handleMouseUp = () => {
       isDraggingRef.current = false;
       setIsPanning(false);
+      setIsDraggingSlider(false);
       dragStartViewRef.current = null;
       dragStartPosXRef.current = null;
       document.body.classList.remove('grabbing-active');
@@ -282,7 +306,7 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
       window.removeEventListener('mouseup', handleMouseUp);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [mode, left, right, data]);
+  }, [mode, left, right, activeDisplayData]);
 
   const zoomOut = () => {
     if (chartFixedRange) {
@@ -292,8 +316,6 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
       setLeft(ABS_MIN);
       setRight(ABS_MAX);
     }
-    setTop('dataMax');
-    setBottom('dataMin');
     setRefAreaLeft(null);
     setRefAreaRight(null);
     dragStartRef.current = null;
@@ -306,6 +328,7 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
     if (e && e.activeLabel != null) {
       const val = Number(e.activeLabel);
       if (!isNaN(val) && (mode === 'select' || mode === 'zoom')) {
+        setIsDraggingSlider(true);
         dragStartRef.current = val;
         dragEndRef.current = val;
         setRefAreaLeft(val);
@@ -326,6 +349,7 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
   };
 
   const handleMouseUpWrapper = () => {
+    setIsDraggingSlider(false);
     if (mode === 'pan' || isDraggingRef.current) {
       isDraggingRef.current = false;
       return;
@@ -364,19 +388,45 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
   };
 
   const getMaterialColor = (index: number) => {
-    const colors = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899'];
-    return colors[index % colors.length];
+    const base = [
+      '#2563eb', // 1 파랑
+      '#dc2626', // 2 빨강
+      '#16a34a', // 3 초록
+      '#c2410c', // 4 오렌지레드
+      '#15803d', // 5 다크그린
+      '#b91c1c', // 6 다크레드
+      '#1d4ed8', // 7 다크블루
+      '#ea580c', // 8 오렌지
+      '#166534', // 9 딥그린
+      '#991b1b', // 10 딥레드
+      '#1e40af', // 11 네이비
+      '#f97316', // 12 라이트오렌지
+    ];
+    return base[index % base.length];
+  };
+
+  const getFileColor = (index: number) => {
+    const base = [
+      '#2563eb', // 1 파랑
+      '#dc2626', // 2 빨강
+      '#16a34a', // 3 초록
+      '#c2410c', // 4 오렌지레드
+      '#15803d', // 5 다크그린
+      '#b91c1c', // 6 다크레드
+      '#1d4ed8', // 7 다크블루
+      '#ea580c', // 8 오렌지
+      '#166534', // 9 딥그린
+      '#991b1b', // 10 딥레드
+      '#1e40af', // 11 네이비
+      '#f97316', // 12 라이트오렌지
+    ];
+    return base[index % base.length];
   };
 
   const handleDownloadChart = async () => {
     if (!chartContainerRef.current) return;
     setIsDownloading(true);
     setIsCapturing(true);
-
-    const tw = parseInt(downloadWidth) || 1920;
-    const th = parseInt(downloadHeight) || 1080;
-    const ol = left;
-    const or = right;
 
     try {
       // X축 범위 변경이 필요한 경우 state 업데이트 후 렌더 대기
@@ -390,79 +440,137 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
         }
       }
 
-      // recharts SVG를 직접 찾아서 캔버스에 그림
-      const svgEl = chartContainerRef.current.querySelector('svg');
-      if (!svgEl) throw new Error('SVG not found');
+      // Prepare for high-fidelity capture
+      const tw = parseInt(downloadWidth) || 1920;
+      const th = parseInt(downloadHeight) || 1080;
 
-      // 원본 SVG의 실제 렌더 크기를 viewBox로 설정해야 올바르게 스케일됨
-      const svgRect = svgEl.getBoundingClientRect();
-      const srcW = svgRect.width || svgEl.clientWidth || tw;
-      const srcH = svgRect.height || svgEl.clientHeight || th;
+      // 1. Force the container to exactly tw×th so Recharts re-renders at target dimensions
+      if (!chartContainerRef.current) return;
 
-      const svgClone = svgEl.cloneNode(true) as SVGElement;
+      const originalStyle = chartContainerRef.current.style.cssText;
+
+      chartContainerRef.current.style.cssText = `
+        width: ${tw}px !important;
+        height: ${th}px !important;
+        max-width: none !important;
+        max-height: none !important;
+        position: fixed !important;
+        top: -9999px !important;
+        left: -9999px !important;
+        overflow: visible !important;
+      `;
+
+      // Wait for Recharts to re-render at the new size
+      await new Promise(r => setTimeout(r, 600));
+
+      const originalSvg = chartContainerRef.current.querySelector('svg.recharts-surface') as SVGSVGElement | null;
+      if (!originalSvg) {
+        chartContainerRef.current.style.cssText = originalStyle;
+        throw new Error('SVG not found');
+      }
+
+      // 2. Clone the reflowed SVG (now sized at tw×th by Recharts itself)
+      const svgClone = originalSvg.cloneNode(true) as SVGSVGElement;
+
+      // 3. Capture and inline styles
+      const inlineStyles = (source: Element, target: Element) => {
+        const computed = window.getComputedStyle(source);
+        let styleString = '';
+        for (const key of computed) {
+          if (key.startsWith('fill') || key.startsWith('stroke') || key.startsWith('font') || key === 'opacity' || key === 'visibility') {
+            styleString += `${key}:${computed.getPropertyValue(key)};`;
+          }
+        }
+        target.setAttribute('style', styleString);
+        const sc = source.children, tc = target.children;
+        for (let i = 0; i < sc.length; i++) if (sc[i] && tc[i]) inlineStyles(sc[i], tc[i]);
+      };
+      inlineStyles(originalSvg, svgClone);
+
+      // Restore original UI immediately
+      chartContainerRef.current.style.cssText = originalStyle;
+      setIsCapturing(false);
+
+      // 4. SVG is already tw×th — just set explicit dimensions and viewBox
+      const srcW = originalSvg.viewBox.baseVal.width || tw;
+      const srcH = originalSvg.viewBox.baseVal.height || th;
+      const scaledH = th;
+
       svgClone.setAttribute('width', String(tw));
-      svgClone.setAttribute('height', String(th));
+      svgClone.setAttribute('height', String(scaledH));
       svgClone.setAttribute('viewBox', `0 0 ${srcW} ${srcH}`);
-      svgClone.style.background = '#ffffff';
+      svgClone.setAttribute('preserveAspectRatio', 'none');
+      
+      // Background
+      const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      bg.setAttribute('width', String(srcW)); bg.setAttribute('height', String(srcH));
+      bg.setAttribute('fill', '#ffffff');
+      svgClone.insertBefore(bg, svgClone.firstChild);
 
-      // 폰트 크기 일괄 적용
-      const fs = parseInt(downloadFontSize) || 14;
-      svgClone.querySelectorAll('text').forEach(t => {
-        t.style.fontSize = `${fs}px`;
-      });
+      // 5. Simulate Legend (Manually adjusted to export size)
+      const legendEl = chartContainerRef.current.querySelector('.recharts-legend-wrapper');
+      if (legendEl && isOverlapMode) {
+        const legendItems = legendEl.querySelectorAll('.recharts-legend-item');
+        let currentX = srcW * 0.05;
+        const legendY = srcH * 0.05;
+        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        legendItems.forEach((item, i) => {
+          const text = item.querySelector('.recharts-legend-item-text')?.textContent || '';
+          const color = item.querySelector('.recharts-surface')?.getAttribute('stroke') || getFileColor(i);
+          const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          line.setAttribute('x1', String(currentX)); line.setAttribute('y1', String(legendY));
+          line.setAttribute('x2', String(currentX + 20)); line.setAttribute('y2', String(legendY));
+          line.setAttribute('stroke', color); line.setAttribute('stroke-width', '3');
+          g.appendChild(line);
+          const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          t.setAttribute('x', String(currentX + 25)); t.setAttribute('y', String(legendY + 5));
+          t.setAttribute('fill', '#334155'); t.setAttribute('font-size', '14px'); t.setAttribute('font-weight', 'bold');
+          t.textContent = text;
+          g.appendChild(t);
+          currentX += text.length * 8 + 60;
+        });
+        svgClone.appendChild(g);
+      }
 
+      // 6. Final Export
       const svgData = new XMLSerializer().serializeToString(svgClone);
-      const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-      const svgUrl = URL.createObjectURL(svgBlob);
-
-      const baseName = `${activeFile?.name.replace(/\.(asc|txt|xrdml)$/i, '') || 'chart'}_${tw}x${th}`;
+      const svgUrl = URL.createObjectURL(new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' }));
+      const baseName = `${activeFile?.name.replace(/\.(asc|txt|xrdml)$/i, '') || 'chart'}_${tw}x${scaledH}`;
 
       if (downloadFormat === 'svg') {
         const link = document.createElement('a');
         link.download = `${baseName}.svg`;
         link.href = svgUrl;
         link.click();
-        URL.revokeObjectURL(svgUrl);
+        setIsDownloading(false);
+        setIsCapturing(false);
       } else {
-        await new Promise<void>((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => {
-            const canvas = document.createElement('canvas');
-            canvas.width = tw;
-            canvas.height = th;
-            const ctx = canvas.getContext('2d')!;
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, tw, th);
-            ctx.drawImage(img, 0, 0, tw, th);
-            URL.revokeObjectURL(svgUrl);
-
-            const mimeType = downloadFormat === 'jpg' ? 'image/jpeg' : 'image/png';
-            const quality = downloadFormat === 'jpg' ? 0.92 : 1.0;
-            const link = document.createElement('a');
-            link.download = `${baseName}.${downloadFormat}`;
-            link.href = canvas.toDataURL(mimeType, quality);
-            link.click();
-            resolve();
-          };
-          img.onerror = reject;
-          img.src = svgUrl;
-        });
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = tw; canvas.height = scaledH;
+          const ctx = canvas.getContext('2d')!;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, tw, scaledH);
+          ctx.drawImage(img, 0, 0, tw, scaledH);
+          const link = document.createElement('a');
+          link.download = `${baseName}.${downloadFormat}`;
+          link.href = canvas.toDataURL(downloadFormat === 'jpg' ? 'image/jpeg' : 'image/png', 0.95);
+          link.click();
+          URL.revokeObjectURL(svgUrl);
+          setIsDownloading(false);
+          setIsCapturing(false);
+        };
+        img.src = svgUrl;
       }
-
-      setLeft(ol);
-      setRight(or);
     } catch (e) {
-      console.error(e);
-      setLeft(ol);
-      setRight(or);
-      alert('다운로드 오류');
-    } finally {
+      console.error('Download failed:', e);
       setIsDownloading(false);
       setIsCapturing(false);
+      alert('다운로드 처리 중 오류가 발생했습니다.');
     }
   };
 
-  const [isCapturing, setIsCapturing] = useState(false);
 
   // Nice integer steps that are multiples of 5 or 10
   const NICE_STEPS = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000];
@@ -471,8 +579,9 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
     let nMin = typeof min === 'number' ? min : 0;
     let nMax = typeof max === 'number' ? max : 100;
 
-    if (min === 'dataMin' && data.length > 0) nMin = data[0].twoTheta;
-    if (max === 'dataMax' && data.length > 0) nMax = data[data.length - 1].twoTheta;
+    const points = activeFile?.data || [];
+    if (min === 'dataMin' && points.length > 0) nMin = points[0].twoTheta;
+    if (max === 'dataMax' && points.length > 0) nMax = points[points.length - 1].twoTheta;
 
     const range = nMax - nMin;
     if (range <= 0) return [];
@@ -503,75 +612,204 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
   const yTicks = [0, 20, 40, 60, 80, 100];
 
   return (
-    <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col h-full relative overflow-hidden">
-      <div className="flex flex-col gap-3 mb-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50/50 p-2 rounded-xl border border-slate-100">
-          <div className="flex items-center gap-4">
+    <div className="bg-white p-4 flex flex-col h-full relative overflow-hidden">
+      <div className="flex flex-col gap-4 mb-4">
+        {/* Main Toolbar */}
+        <div className="bg-slate-50 p-2 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
             <div className="relative">
-              <select value={activeFileId || ''} onChange={(e) => onFileChange(e.target.value)} className="appearance-none bg-white border border-slate-200 text-slate-700 text-sm rounded-lg block w-48 sm:w-64 p-2 pl-3 pr-8 truncate font-bold shadow-sm">
+              <select 
+                value={activeFileId || ''} 
+                onChange={(e) => onFileChange(e.target.value)} 
+                disabled={isOverlapMode}
+                className={`appearance-none bg-white border border-slate-200 text-slate-700 text-sm rounded-lg block w-48 sm:w-64 p-2 pl-3 pr-8 truncate font-bold shadow-sm ${isOverlapMode ? 'opacity-50 grayscale cursor-not-allowed' : 'hover:border-slate-300'}`}
+              >
                 {files.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
               <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500"><ChevronDown size={14} /></div>
             </div>
-            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200">
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onToggleOverlap?.()}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg border font-bold text-xs transition-all ${isOverlapMode ? 'bg-blue-600 text-white border-blue-600 shadow-md' : 'bg-white text-slate-600 border-slate-200 hover:border-blue-400'}`}
+              >
+                <Layers size={14} />
+                <span>OVERLAP</span>
+                {isOverlapMode && <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] ml-1">{selectedOverlapFileIds.length}</span>}
+              </button>
+
+              {isOverlapMode && (
+                <div className="relative">
+                  <button
+                    onClick={() => setShowFileSelector(!showFileSelector)}
+                    className="p-2 bg-white text-slate-500 rounded-lg border hover:text-blue-600 hover:border-blue-400 transition-all shadow-sm"
+                    title="Select Files to Overlap"
+                  >
+                    <Plus size={18} />
+                  </button>
+                  {showFileSelector && (
+                    <div className="absolute top-full left-0 mt-2 w-64 bg-white rounded-xl shadow-2xl border border-slate-100 py-3 z-[60] animate-fade-in max-h-80 overflow-y-auto">
+                      <div className="px-4 pb-2 mb-2 border-b border-slate-50 flex justify-between items-center">
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Select Files</span>
+                        <button onClick={() => setShowFileSelector(false)} className="text-slate-400 hover:text-slate-600 transition-colors"><X size={14} /></button>
+                      </div>
+                      <div className="flex flex-col">
+                        {files.map((f, idx) => (
+                          <div key={f.id} className="flex flex-col hover:bg-slate-50 transition-colors border-b border-slate-50 last:border-0">
+                            <button
+                              onClick={() => onToggleFileSelection?.(f.id)}
+                              className="flex items-center gap-3 px-4 py-2.5 text-left w-full"
+                            >
+                              <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all flex-shrink-0 ${selectedOverlapFileIds.includes(f.id) ? 'bg-blue-600 border-blue-600' : 'border-slate-300'}`}>
+                                {selectedOverlapFileIds.includes(f.id) && <Check size={10} className="text-white" strokeWidth={4} />}
+                              </div>
+                              <div className="flex-1 min-w-0 pr-2">
+                                <p className={`text-xs font-bold truncate ${selectedOverlapFileIds.includes(f.id) ? 'text-blue-600' : 'text-slate-600'}`} title={f.name}>{f.name}</p>
+                              </div>
+                              <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: getFileColor(idx) }} />
+                            </button>
+                            {selectedOverlapFileIds.includes(f.id) && onUpdateFileYOffset && (
+                              <div className="flex items-center gap-3 px-4 pb-3 pt-1 pl-11">
+                                <div className="flex-1 flex flex-col gap-1">
+                                  <div className="flex justify-between items-center mb-0.5">
+                                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Vertical Offset</span>
+                                    <span className="text-[10px] font-mono font-bold text-blue-600">{f.yOffset || 0}%</span>
+                                  </div>
+                                  <input 
+                                    type="range" 
+                                    min="-100" 
+                                    max="100" 
+                                    step="0.5" 
+                                    value={f.yOffset || 0} 
+                                    onChange={(e) => onUpdateFileYOffset(f.id, parseFloat(e.target.value) || 0)} 
+                                    onMouseDown={() => setIsDraggingSlider(true)}
+                                    onMouseUp={() => setIsDraggingSlider(false)}
+                                    onTouchStart={() => setIsDraggingSlider(true)}
+                                    onTouchEnd={() => setIsDraggingSlider(false)}
+                                    className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-500" 
+                                  />
+                                </div>
+                                <button 
+                                  onClick={() => onUpdateFileYOffset(f.id, 0)}
+                                  className="p-1 text-slate-300 hover:text-rose-500 transition-colors"
+                                  title="Reset Y-Shift"
+                                >
+                                  <RotateCcw size={12} />
+                                </button>
+                              </div>
+                            )}
+
+                            {selectedOverlapFileIds.includes(f.id) && onUpdateFileOpacity && (
+                              <div className="flex items-center gap-3 px-4 pb-4 pt-1 pl-11">
+                                <div className="flex-1 flex flex-col gap-1">
+                                  <div className="flex justify-between items-center mb-0.5">
+                                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Opacity</span>
+                                    <span className="text-[10px] font-mono font-bold text-slate-600">{(f.opacity !== undefined ? f.opacity : 1).toFixed(1)}</span>
+                                  </div>
+                                  <input 
+                                    type="range" 
+                                    min="0" 
+                                    max="1" 
+                                    step="0.1" 
+                                    value={f.opacity !== undefined ? f.opacity : 1} 
+                                    onChange={(e) => onUpdateFileOpacity(f.id, parseFloat(e.target.value))} 
+                                    onMouseDown={() => setIsDraggingSlider(true)}
+                                    onMouseUp={() => setIsDraggingSlider(false)}
+                                    onTouchStart={() => setIsDraggingSlider(true)}
+                                    onTouchEnd={() => setIsDraggingSlider(false)}
+                                    className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-slate-400" 
+                                  />
+                                </div>
+                                <button 
+                                  onClick={() => onUpdateFileOpacity(f.id, 1)}
+                                  className="p-1 text-slate-300 hover:text-blue-500 transition-colors"
+                                  title="Reset Opacity"
+                                >
+                                  <RotateCcw size={12} />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1 bg-slate-200/50 p-1 rounded-lg border border-slate-200">
               {[{ id: 'pan', icon: Move }, { id: 'select', icon: MousePointer2 }, { id: 'zoom', icon: ZoomIn }].map(item => (
                 <button key={item.id} onClick={() => onModeChange(item.id as InteractionMode)} className={`p-1.5 rounded-md transition-all ${mode === item.id ? 'bg-white text-blue-600 shadow-sm ring-1 ring-blue-100' : 'text-slate-500 hover:bg-white/50'}`}>
                   <item.icon size={18} />
                 </button>
               ))}
-              <div className="w-px h-5 bg-slate-200 mx-1" />
-              <button onClick={zoomOut} className="p-1.5 text-slate-500 hover:text-red-500 hover:bg-white rounded-md transition-all"><RotateCcw size={18} /></button>
+              <div className="w-px h-5 bg-slate-300 mx-1" />
+              <button onClick={zoomOut} className="p-1.5 text-slate-500 hover:text-rose-500 hover:bg-white rounded-md transition-all"><RotateCcw size={18} /></button>
             </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="text-[10px] font-mono text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-100 hidden sm:block">{chartSize.width} x {chartSize.height} px</div>
             <div className="flex items-center gap-2">
               <button onClick={() => setShowDownloadSettings(!showDownloadSettings)} className="p-2 bg-white text-slate-500 rounded-lg border hover:text-slate-800 transition-all shadow-sm"><Settings2 size={18} /></button>
-              <button onClick={handleDownloadChart} disabled={isDownloading} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-300 font-bold text-xs flex items-center gap-2">
+              <button onClick={handleDownloadChart} disabled={isDownloading} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-300 font-bold text-xs flex items-center gap-2 shadow-sm">
                 <Download size={16} /><span>{isDownloading ? '...' : 'Download'}</span>
               </button>
             </div>
           </div>
         </div>
-        <div className="flex items-center justify-between gap-4 px-1">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-3 bg-white px-3 py-2 rounded-lg border shadow-sm">
-              <div className="flex items-center gap-2 border-r pr-3"><Move size={14} className="text-blue-600" /><span className="text-[10px] font-black text-slate-800 uppercase tracking-widest whitespace-nowrap">PEAK SHIFT</span></div>
-              <div className="flex items-center gap-3">
-                <input type="range" min="-0.5" max="0.5" step="0.005" value={twoThetaShift} onChange={(e) => onUpdateShift(parseFloat(e.target.value))} className="w-32 h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+
+        {/* Controls Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-4 px-1">
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-4 bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm">
+              {/* X-Shift */}
+              <div className="flex items-center gap-3 pr-2">
+                <div className="flex items-center gap-2"><Move size={14} className="text-blue-600" /><span className="text-[10px] font-black text-slate-800 uppercase tracking-widest whitespace-nowrap">X-SHIFT</span></div>
+                <input 
+                  type="range" 
+                  min="-0.5" max="0.5" step="0.005" 
+                  value={twoThetaShift} 
+                  onChange={(e) => onUpdateShift(parseFloat(e.target.value))} 
+                  onMouseDown={() => setIsDraggingSlider(true)}
+                  onMouseUp={() => setIsDraggingSlider(false)}
+                  onTouchStart={() => setIsDraggingSlider(true)}
+                  onTouchEnd={() => setIsDraggingSlider(false)}
+                  className="w-32 h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600" 
+                />
                 <div className="flex items-center gap-1.5 bg-slate-50 px-2 py-0.5 rounded border">
                   <input type="number" step="0.001" value={twoThetaShift} onChange={(e) => onUpdateShift(parseFloat(e.target.value) || 0)} className="w-12 bg-transparent text-xs font-mono font-bold text-blue-700 focus:outline-none text-center" />
-                  <span className="text-[10px] font-black text-slate-400">2θ</span>
+                  <span className="text-[10px] font-black text-slate-300">2θ</span>
                 </div>
-                <button onClick={() => onUpdateShift(0)} className="px-2 py-1 text-[9px] font-black text-slate-500 hover:bg-slate-800 hover:text-white border rounded transition-all">RESET</button>
               </div>
+              <button onClick={() => onUpdateShift(0)} className="border-l border-slate-100 pl-4 py-1 text-[9px] font-black text-slate-400 hover:text-blue-600 transition-all">RESET</button>
             </div>
 
             <button
               onClick={() => setIsRawMode(!isRawMode)}
-              className={`px-3 py-2 rounded-lg border text-[10px] font-black transition-all flex items-center gap-2 shadow-sm ${isRawMode ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white text-slate-500 hover:border-slate-300'}`}
-              title={isRawMode ? "Performance Mode (1/5 Sampled)" : "Raw Data Mode (Full Data)"}
+              className={`px-3 py-1.5 rounded-xl border flex items-center gap-2 transition-all shadow-sm ${isRawMode ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}`}
+              title={isRawMode ? "Switch to Performance Mode (1/2 Sampled)" : "Switch to Raw Data Mode (Full Resolution)"}
             >
               <div className={`w-1.5 h-1.5 rounded-full ${isRawMode ? 'bg-white animate-pulse' : 'bg-slate-300'}`} />
-              RAW DATA: {isRawMode ? 'ON' : 'OFF'}
+              <span className="text-[10px] font-black uppercase tracking-widest leading-none">Raw: {isRawMode ? 'ON' : 'OFF'}</span>
             </button>
           </div>
-          <div className="flex items-center gap-3 text-[10px] text-slate-400 font-medium">
-            <span>Z for Zoom</span><span className="w-1 h-1 rounded-full bg-slate-300" /><span>Double-click Reset</span>
+          <div className="flex items-center gap-3 text-[10px] text-slate-400 font-bold uppercase tracking-tight">
+            <span>Z Zoom</span><span className="w-1 h-1 rounded-full bg-slate-300" /><span>Double-Click Reset</span>
           </div>
         </div>
       </div>
 
       <div
         ref={chartContainerRef}
-        className={`flex-1 min-h-[400px] w-full relative select-none touch-none ${getCursorStyle()} outline-none`}
+        className={`flex-1 min-h-[500px] w-full relative select-none touch-none ${getCursorStyle()} outline-none bg-white rounded-xl border border-slate-200 shadow-inner overflow-visible`}
         onDoubleClick={zoomOut}
       >
-        <div className="absolute inset-0 outline-none">
+        <div className="absolute inset-0 outline-none overflow-visible">
           <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
             <LineChart
               data={activeDisplayData}
-              margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
+              margin={{ top: 40, right: 30, left: 20, bottom: 40 }}
               onMouseDown={handleMouseDownWrapper}
               onMouseMove={handleMouseMoveWrapper}
               onMouseUp={handleMouseUpWrapper}
@@ -585,31 +823,69 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
                 domain={[left, right]}
                 allowDataOverflow
                 ticks={xTicks}
-                label={{ value: '2-Theta (degrees)', position: 'bottom', offset: 0, style: { fill: '#64748b', fontSize: 14, fontWeight: 400 } }}
-                tick={{ fontSize: 12, fill: '#64748b' }}
+                label={{ value: '2-Theta (degrees)', position: 'insideBottom', offset: 0, style: { fill: '#64748b', fontSize: isCapturing ? parseInt(downloadFontSize) : 14, fontWeight: 400 } }}
+                tick={{ fontSize: isCapturing ? Math.round(parseInt(downloadFontSize) * 0.85) : 12, fill: '#64748b' }}
                 tickFormatter={v => v.toFixed(0)}
               />
               <YAxis
                 domain={[0, 100]}
                 allowDataOverflow
                 ticks={yTicks}
-                label={{ value: 'Intensity (a.u.)', angle: -90, position: 'insideLeft', offset: 10, style: { fill: '#64748b', fontSize: 14, fontWeight: 400 } }}
-                tick={{ fontSize: 12, fill: '#64748b' }}
+                label={{ value: 'Intensity (a.u.)', angle: -90, position: 'insideLeft', offset: 10, style: { fill: '#64748b', fontSize: isCapturing ? parseInt(downloadFontSize) : 14, fontWeight: 400 } }}
+                tick={{ fontSize: isCapturing ? Math.round(parseInt(downloadFontSize) * 0.85) : 12, fill: '#64748b' }}
                 tickFormatter={v => (typeof v === 'number' ? v.toFixed(0) : v)}
               />
-              {!isPanning && (
+              {(!isPanning && !isDraggingSlider) && (
                 <Tooltip
+                  offset={-80} // Position above cursor
                   cursor={mode === 'pan' ? false : { stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '3 3' }}
-                  formatter={(val: any) => [typeof val === 'number' ? val.toFixed(2) : val, 'Intensity']}
-                  labelFormatter={(label: any) => typeof label === 'number' ? `2θ: ${label.toFixed(3)}°` : label}
+                  content={({ active, payload, label }) => {
+                    if (!active || !payload || payload.length === 0) return null;
+                    // Only show the first (primary) payload item to keep it simple
+                    const item = payload[0];
+                    return (
+                      <div className="bg-white border border-slate-200 p-1.5 rounded shadow-lg text-[10px] text-slate-700 flex flex-col gap-0.5 pointer-events-none">
+                        <div className="font-bold border-b border-slate-100 pb-0.5 mb-0.5">
+                          2θ: {Number(label).toFixed(3)}°
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: item.color }} />
+                          <span>Intensity: <strong>{Number(item.value).toFixed(2)}</strong></span>
+                        </div>
+                      </div>
+                    );
+                  }}
+                  shared={false} // Disable shared to only show one point at a time
                 />
               )}
-              <Line type="monotone" dataKey="intensity" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
-              {visibleReferenceMaterials.map((matId, index) => (allMaterialDefinitions[matId] || []).map((def, pIdx) => (
+              {!isOverlapMode && (
+                <Line type="monotone" dataKey="intensity" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+              )}
+              {isOverlapMode && overlapDatasets.map((ds) => {
+                const f = files.find(file => file.id === ds.id);
+                return (
+                  <Line
+                    key={ds.id}
+                    data={ds.data}
+                    type="monotone"
+                    dataKey="intensity"
+                    name={ds.name}
+                    stroke={getFileColor(files.findIndex(f => f.id === ds.id))}
+                    strokeWidth={2}
+                    strokeOpacity={f?.opacity !== undefined ? f.opacity : 1}
+                    dot={false}
+                    isAnimationActive={false}
+                    connectNulls
+                    shapeRendering="optimizeSpeed"
+                  />
+                );
+              })}
+              {isOverlapMode && <Legend verticalAlign="top" height={36}/>}
+              {!isDraggingSlider && visibleReferenceMaterials.map((matId, index) => (allMaterialDefinitions[matId] || []).map((def, pIdx) => (
                 <ReferenceLine key={`${matId}-${pIdx}`} x={def.theoreticalPos || 0} stroke={getMaterialColor(index)} strokeWidth={1} strokeDasharray="3 3" strokeOpacity={0.6} label={{ value: def.plane ? `(${def.plane})` : '', position: 'top', fill: getMaterialColor(index), fontSize: 10, opacity: 0.8 }} />
               )))}
               {/* Peak range overlays */}
-              {peakDefinitions.map(def => {
+              {!isDraggingSlider && peakDefinitions.map(def => {
                 const isActive = def.plane === activePlane;
                 if (!def.range?.min || !def.range?.max) return null;
                 return (
@@ -635,7 +911,7 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
                   <ReferenceLine x={gsFWHMData.peak2Theta} stroke="#6366f1" strokeWidth={1} strokeDasharray="5 5" />
                 </>
               )}
-              {selectedCnTwoTheta !== null && <ReferenceLine x={selectedCnTwoTheta} stroke="#10b981" strokeWidth={3} label={{ value: `Selected: ${selectedCnTwoTheta.toFixed(2)}°`, position: 'top', fill: '#10b981', fontSize: 12, fontWeight: 'bold' }} />}
+              {(!isDraggingSlider && selectedCnTwoTheta !== null) && <ReferenceLine x={selectedCnTwoTheta} stroke="#10b981" strokeWidth={3} label={{ value: `Selected: ${selectedCnTwoTheta.toFixed(2)}°`, position: 'top', fill: '#10b981', fontSize: 12, fontWeight: 'bold' }} />}
             </LineChart>
           </ResponsiveContainer>
         </div>

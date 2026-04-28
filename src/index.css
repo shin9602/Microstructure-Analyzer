@@ -8,3 +8,18 @@
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
   }
 }
+
+/* Custom Scrollbar - Gray for Light Mode */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-slate-100;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded-full border-2 border-slate-100;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-400;
+}
