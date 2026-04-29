@@ -78,6 +78,8 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
   const [refAreaLeft, setRefAreaLeft] = useState<number | null>(null);
   const [refAreaRight, setRefAreaRight] = useState<number | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isBulkDownloading, setIsBulkDownloading] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
 
   // Zoom State
   const [left, setLeft] = useState<string | number>(chartFixedRange ? chartFixedRange[0] : 'dataMin');
@@ -423,13 +425,133 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
     return base[index % base.length];
   };
 
+  const captureChartToBlob = async (tw: number, th: number): Promise<Blob | null> => {
+    if (!chartContainerRef.current) return null;
+
+    const originalStyle = chartContainerRef.current.style.cssText;
+    chartContainerRef.current.style.cssText = `
+      width: ${tw}px !important;
+      height: ${th}px !important;
+      max-width: none !important;
+      max-height: none !important;
+      position: fixed !important;
+      top: -9999px !important;
+      left: -9999px !important;
+      overflow: visible !important;
+    `;
+
+    await new Promise(r => setTimeout(r, 600));
+
+    const originalSvg = chartContainerRef.current.querySelector('svg.recharts-surface') as SVGSVGElement | null;
+    if (!originalSvg) {
+      chartContainerRef.current.style.cssText = originalStyle;
+      return null;
+    }
+
+    const svgClone = originalSvg.cloneNode(true) as SVGSVGElement;
+
+    const inlineStyles = (source: Element, target: Element) => {
+      const computed = window.getComputedStyle(source);
+      let styleString = '';
+      for (const key of computed) {
+        if (key.startsWith('fill') || key.startsWith('stroke') || key.startsWith('font') || key === 'opacity' || key === 'visibility') {
+          styleString += `${key}:${computed.getPropertyValue(key)};`;
+        }
+      }
+      target.setAttribute('style', styleString);
+      const sc = source.children, tc = target.children;
+      for (let i = 0; i < sc.length; i++) if (sc[i] && tc[i]) inlineStyles(sc[i], tc[i]);
+    };
+    inlineStyles(originalSvg, svgClone);
+
+    chartContainerRef.current.style.cssText = originalStyle;
+
+    const srcW = originalSvg.viewBox.baseVal.width || tw;
+    const srcH = originalSvg.viewBox.baseVal.height || th;
+
+    svgClone.setAttribute('width', String(tw));
+    svgClone.setAttribute('height', String(th));
+    svgClone.setAttribute('viewBox', `0 0 ${srcW} ${srcH}`);
+    svgClone.setAttribute('preserveAspectRatio', 'none');
+
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bg.setAttribute('width', String(srcW)); bg.setAttribute('height', String(srcH));
+    bg.setAttribute('fill', '#ffffff');
+    svgClone.insertBefore(bg, svgClone.firstChild);
+
+    const legendEl = chartContainerRef.current.querySelector('.recharts-legend-wrapper');
+    if (legendEl && isOverlapMode) {
+      const legendItems = legendEl.querySelectorAll('.recharts-legend-item');
+      let currentX = srcW * 0.05;
+      const legendY = srcH * 0.05;
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      legendItems.forEach((item, i) => {
+        const text = item.querySelector('.recharts-legend-item-text')?.textContent || '';
+        const color = item.querySelector('.recharts-surface')?.getAttribute('stroke') || getFileColor(i);
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', String(currentX)); line.setAttribute('y1', String(legendY));
+        line.setAttribute('x2', String(currentX + 20)); line.setAttribute('y2', String(legendY));
+        line.setAttribute('stroke', color); line.setAttribute('stroke-width', '3');
+        g.appendChild(line);
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('x', String(currentX + 25)); t.setAttribute('y', String(legendY + 5));
+        t.setAttribute('fill', '#334155'); t.setAttribute('font-size', '14px'); t.setAttribute('font-weight', 'bold');
+        t.textContent = text;
+        g.appendChild(t);
+        currentX += text.length * 8 + 60;
+      });
+      svgClone.appendChild(g);
+    }
+
+    const svgData = new XMLSerializer().serializeToString(svgClone);
+
+    if (downloadFormat === 'svg') {
+      return new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+    }
+
+    return new Promise<Blob | null>((resolve) => {
+      const svgUrl = URL.createObjectURL(new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' }));
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = tw; canvas.height = th;
+        const ctx = canvas.getContext('2d')!;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, tw, th);
+        ctx.drawImage(img, 0, 0, tw, th);
+        canvas.toBlob(blob => {
+          URL.revokeObjectURL(svgUrl);
+          resolve(blob);
+        }, downloadFormat === 'jpg' ? 'image/jpeg' : 'image/png', 0.95);
+      };
+      img.onerror = () => { URL.revokeObjectURL(svgUrl); resolve(null); };
+      img.src = svgUrl;
+    });
+  };
+
+  const resolveFileName = (usedNames: Set<string>, baseName: string, ext: string): string => {
+    let candidate = `${baseName}.${ext}`;
+    if (!usedNames.has(candidate)) return candidate;
+    let i = 1;
+    while (usedNames.has(`${baseName} (${i}).${ext}`)) i++;
+    return `${baseName} (${i}).${ext}`;
+  };
+
+  const triggerDownload = (blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = fileName;
+    link.href = url;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   const handleDownloadChart = async () => {
     if (!chartContainerRef.current) return;
     setIsDownloading(true);
     setIsCapturing(true);
 
     try {
-      // X축 범위 변경이 필요한 경우 state 업데이트 후 렌더 대기
       if (useCustomXAxis && downloadXAxisMin && downloadXAxisMax) {
         const minVal = parseFloat(downloadXAxisMin);
         const maxVal = parseFloat(downloadXAxisMax);
@@ -440,135 +562,75 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
         }
       }
 
-      // Prepare for high-fidelity capture
       const tw = parseInt(downloadWidth) || 1920;
       const th = parseInt(downloadHeight) || 1080;
 
-      // 1. Force the container to exactly tw×th so Recharts re-renders at target dimensions
-      if (!chartContainerRef.current) return;
-
-      const originalStyle = chartContainerRef.current.style.cssText;
-
-      chartContainerRef.current.style.cssText = `
-        width: ${tw}px !important;
-        height: ${th}px !important;
-        max-width: none !important;
-        max-height: none !important;
-        position: fixed !important;
-        top: -9999px !important;
-        left: -9999px !important;
-        overflow: visible !important;
-      `;
-
-      // Wait for Recharts to re-render at the new size
-      await new Promise(r => setTimeout(r, 600));
-
-      const originalSvg = chartContainerRef.current.querySelector('svg.recharts-surface') as SVGSVGElement | null;
-      if (!originalSvg) {
-        chartContainerRef.current.style.cssText = originalStyle;
-        throw new Error('SVG not found');
-      }
-
-      // 2. Clone the reflowed SVG (now sized at tw×th by Recharts itself)
-      const svgClone = originalSvg.cloneNode(true) as SVGSVGElement;
-
-      // 3. Capture and inline styles
-      const inlineStyles = (source: Element, target: Element) => {
-        const computed = window.getComputedStyle(source);
-        let styleString = '';
-        for (const key of computed) {
-          if (key.startsWith('fill') || key.startsWith('stroke') || key.startsWith('font') || key === 'opacity' || key === 'visibility') {
-            styleString += `${key}:${computed.getPropertyValue(key)};`;
-          }
-        }
-        target.setAttribute('style', styleString);
-        const sc = source.children, tc = target.children;
-        for (let i = 0; i < sc.length; i++) if (sc[i] && tc[i]) inlineStyles(sc[i], tc[i]);
-      };
-      inlineStyles(originalSvg, svgClone);
-
-      // Restore original UI immediately
-      chartContainerRef.current.style.cssText = originalStyle;
+      const blob = await captureChartToBlob(tw, th);
       setIsCapturing(false);
 
-      // 4. SVG is already tw×th — just set explicit dimensions and viewBox
-      const srcW = originalSvg.viewBox.baseVal.width || tw;
-      const srcH = originalSvg.viewBox.baseVal.height || th;
-      const scaledH = th;
+      if (!blob) throw new Error('Capture failed');
 
-      svgClone.setAttribute('width', String(tw));
-      svgClone.setAttribute('height', String(scaledH));
-      svgClone.setAttribute('viewBox', `0 0 ${srcW} ${srcH}`);
-      svgClone.setAttribute('preserveAspectRatio', 'none');
-      
-      // Background
-      const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      bg.setAttribute('width', String(srcW)); bg.setAttribute('height', String(srcH));
-      bg.setAttribute('fill', '#ffffff');
-      svgClone.insertBefore(bg, svgClone.firstChild);
-
-      // 5. Simulate Legend (Manually adjusted to export size)
-      const legendEl = chartContainerRef.current.querySelector('.recharts-legend-wrapper');
-      if (legendEl && isOverlapMode) {
-        const legendItems = legendEl.querySelectorAll('.recharts-legend-item');
-        let currentX = srcW * 0.05;
-        const legendY = srcH * 0.05;
-        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-        legendItems.forEach((item, i) => {
-          const text = item.querySelector('.recharts-legend-item-text')?.textContent || '';
-          const color = item.querySelector('.recharts-surface')?.getAttribute('stroke') || getFileColor(i);
-          const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-          line.setAttribute('x1', String(currentX)); line.setAttribute('y1', String(legendY));
-          line.setAttribute('x2', String(currentX + 20)); line.setAttribute('y2', String(legendY));
-          line.setAttribute('stroke', color); line.setAttribute('stroke-width', '3');
-          g.appendChild(line);
-          const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-          t.setAttribute('x', String(currentX + 25)); t.setAttribute('y', String(legendY + 5));
-          t.setAttribute('fill', '#334155'); t.setAttribute('font-size', '14px'); t.setAttribute('font-weight', 'bold');
-          t.textContent = text;
-          g.appendChild(t);
-          currentX += text.length * 8 + 60;
-        });
-        svgClone.appendChild(g);
-      }
-
-      // 6. Final Export
-      const svgData = new XMLSerializer().serializeToString(svgClone);
-      const svgUrl = URL.createObjectURL(new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' }));
-      const baseName = `${activeFile?.name.replace(/\.(asc|txt|xrdml)$/i, '') || 'chart'}_${tw}x${scaledH}`;
-
-      if (downloadFormat === 'svg') {
-        const link = document.createElement('a');
-        link.download = `${baseName}.svg`;
-        link.href = svgUrl;
-        link.click();
-        setIsDownloading(false);
-        setIsCapturing(false);
-      } else {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = tw; canvas.height = scaledH;
-          const ctx = canvas.getContext('2d')!;
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, tw, scaledH);
-          ctx.drawImage(img, 0, 0, tw, scaledH);
-          const link = document.createElement('a');
-          link.download = `${baseName}.${downloadFormat}`;
-          link.href = canvas.toDataURL(downloadFormat === 'jpg' ? 'image/jpeg' : 'image/png', 0.95);
-          link.click();
-          URL.revokeObjectURL(svgUrl);
-          setIsDownloading(false);
-          setIsCapturing(false);
-        };
-        img.src = svgUrl;
-      }
+      const rawName = activeFile?.name.replace(/\.(asc|txt|xrdml)$/i, '') || 'chart';
+      const baseName = `${rawName}_${tw}x${th}`;
+      const ext = downloadFormat;
+      const fileName = `${baseName}.${ext}`;
+      triggerDownload(blob, fileName);
     } catch (e) {
       console.error('Download failed:', e);
+      alert('다운로드 처리 중 오류가 발생했습니다.');
+    } finally {
       setIsDownloading(false);
       setIsCapturing(false);
-      alert('다운로드 처리 중 오류가 발생했습니다.');
     }
+  };
+
+  const handleBulkDownload = async () => {
+    if (files.length === 0 || !chartContainerRef.current) return;
+    setIsBulkDownloading(true);
+    setIsCapturing(true);
+    setBulkProgress({ current: 0, total: files.length });
+
+    const tw = parseInt(downloadWidth) || 1920;
+    const th = parseInt(downloadHeight) || 1080;
+    const ext = downloadFormat;
+    const usedNames = new Set<string>();
+
+    if (useCustomXAxis && downloadXAxisMin && downloadXAxisMax) {
+      const minVal = parseFloat(downloadXAxisMin);
+      const maxVal = parseFloat(downloadXAxisMax);
+      if (!isNaN(minVal) && !isNaN(maxVal) && minVal < maxVal) {
+        setLeft(minVal);
+        setRight(maxVal);
+        await new Promise(r => setTimeout(r, 150));
+      }
+    }
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setBulkProgress({ current: i + 1, total: files.length });
+
+      onFileChange(file.id);
+      await new Promise(r => setTimeout(r, 400));
+
+      try {
+        const blob = await captureChartToBlob(tw, th);
+        if (!blob) continue;
+
+        const rawName = file.name.replace(/\.(asc|txt|xrdml)$/i, '');
+        const baseName = `${rawName}_${tw}x${th}`;
+        const fileName = resolveFileName(usedNames, baseName, ext);
+        usedNames.add(fileName);
+        triggerDownload(blob, fileName);
+
+        await new Promise(r => setTimeout(r, 300));
+      } catch (e) {
+        console.error(`Failed to download ${file.name}:`, e);
+      }
+    }
+
+    setIsCapturing(false);
+    setIsBulkDownloading(false);
+    setBulkProgress(null);
   };
 
 
@@ -752,9 +814,20 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
             </div>
             <div className="flex items-center gap-2">
               <button onClick={() => setShowDownloadSettings(!showDownloadSettings)} className="p-2 bg-white text-slate-500 rounded-lg border hover:text-slate-800 transition-all shadow-sm"><Settings2 size={18} /></button>
-              <button onClick={handleDownloadChart} disabled={isDownloading} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-300 font-bold text-xs flex items-center gap-2 shadow-sm">
+              <button onClick={handleDownloadChart} disabled={isDownloading || isBulkDownloading} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-300 font-bold text-xs flex items-center gap-2 shadow-sm">
                 <Download size={16} /><span>{isDownloading ? '...' : 'Download'}</span>
               </button>
+              {files.length > 1 && (
+                <button
+                  onClick={handleBulkDownload}
+                  disabled={isDownloading || isBulkDownloading}
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:bg-slate-300 font-bold text-xs flex items-center gap-2 shadow-sm"
+                  title={`모든 파일 일괄 다운로드 (${files.length}개)`}
+                >
+                  <Download size={16} />
+                  <span>{isBulkDownloading ? `${bulkProgress?.current}/${bulkProgress?.total}` : `All (${files.length})`}</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -919,11 +992,27 @@ const ChartViewer: React.FC<ChartViewerProps> = ({
 
       {isCapturing && (
         <div className="capture-overlay fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[99999]">
-          <div className="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center">
-            <Download className="text-blue-600 animate-bounce mb-4" size={32} />
-            <h3 className="text-xl font-bold mb-2">고해상도 최적화 중...</h3>
-            <p className="text-slate-500 text-sm mb-6">{downloadWidth}x{downloadHeight} 렌더링 중</p>
-            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden"><div className="bg-blue-600 h-full w-1/2 animate-shimmer"></div></div>
+          <div className="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center min-w-[280px]">
+            <Download className={`mb-4 animate-bounce ${isBulkDownloading ? 'text-emerald-600' : 'text-blue-600'}`} size={32} />
+            {isBulkDownloading && bulkProgress ? (
+              <>
+                <h3 className="text-xl font-bold mb-2">일괄 다운로드 중...</h3>
+                <p className="text-slate-500 text-sm mb-4">{bulkProgress.current} / {bulkProgress.total} 파일</p>
+                <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                  <div
+                    className="bg-emerald-600 h-full rounded-full transition-all duration-300"
+                    style={{ width: `${(bulkProgress.current / bulkProgress.total) * 100}%` }}
+                  />
+                </div>
+                <p className="text-xs text-slate-400 mt-2">{Math.round((bulkProgress.current / bulkProgress.total) * 100)}%</p>
+              </>
+            ) : (
+              <>
+                <h3 className="text-xl font-bold mb-2">고해상도 최적화 중...</h3>
+                <p className="text-slate-500 text-sm mb-6">{downloadWidth}x{downloadHeight} 렌더링 중</p>
+                <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden"><div className="bg-blue-600 h-full w-1/2 animate-shimmer"></div></div>
+              </>
+            )}
           </div>
         </div>
       )}
