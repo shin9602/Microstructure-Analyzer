@@ -26,6 +26,7 @@ export interface CanvasAreaProps {
     microPhaseMode: '2-phase' | '3-phase';
     correctionMode?: 'merge' | 'split' | 'reassign' | null;
     onManualCorrection?: (updates: any) => void;
+    onCalibrationLine?: (pixelLength: number) => void;
 }
 
 export interface CanvasAreaHandle {
@@ -43,7 +44,7 @@ const CanvasArea = forwardRef<CanvasAreaHandle, CanvasAreaProps>((props, ref) =>
         imageManager, calibrationManager, measurements, setMeasurements,
         currentTool, setTool, onSelectionChange, analysisMode,
         onProfileUpdate, onRoughnessProfileUpdate, alStartThreshold, alEndThreshold,
-        imageVersion, microPhaseMode, correctionMode, onManualCorrection
+        imageVersion, microPhaseMode, correctionMode, onManualCorrection, onCalibrationLine
     } = props;
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -441,9 +442,8 @@ const CanvasArea = forwardRef<CanvasAreaHandle, CanvasAreaProps>((props, ref) =>
             setMeasurements(prev => [...prev, meas]);
         } else if (currentTool === 'calibration') {
             const length = Math.sqrt(Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2));
-            const realLength = window.prompt(`길이: ${length.toFixed(1)}px\n실제 길이를 입력하세요 (${calibrationManager.unit}):`);
-            if (realLength && parseFloat(realLength) > 0) {
-                calibrationManager.setCalibration(length, parseFloat(realLength), calibrationManager.unit, '', '');
+            if (onCalibrationLine) {
+                onCalibrationLine(length);
             }
             setTool(null);
         } else if (correctionMode === 'split') {

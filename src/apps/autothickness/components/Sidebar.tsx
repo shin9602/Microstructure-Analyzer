@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-    FolderOpen, Settings, Info, Minus, Square, TrendingUp, Columns, MousePointer2, Layers, Microscope, ScanLine, Download
+    FolderOpen, Settings, Info, Minus, Square, TrendingUp, Columns, MousePointer2, Layers, Microscope, ScanLine, Download, Ruler
 } from 'lucide-react';
 import type { CalibrationManager } from '../services/CalibrationManager';
 import type { ImageManager } from '../services/ImageManager';
@@ -196,6 +196,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <div className="font-mono text-slate-800 font-bold">{(calibrationManager.pixelsPerUnit || 0).toFixed(4)} px/{calibrationManager.unit}</div>
                         <div className="text-slate-500 mt-1 truncate">{calibrationManager.notes}</div>
                     </div>
+
+                    {/* 선으로 캘리브레이션 버튼 */}
+                    <button
+                        onClick={() => setTool(currentTool === 'calibration' ? null : 'calibration')}
+                        className={`w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-sm font-bold transition-all border ${
+                            currentTool === 'calibration'
+                                ? 'bg-blue-600 text-white border-blue-600 shadow-md'
+                                : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'
+                        }`}
+                    >
+                        <Ruler size={14} />
+                        {currentTool === 'calibration' ? '선 긋는 중...' : '선으로 캘리브레이션'}
+                    </button>
                 </div>
             </div>
 

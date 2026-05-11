@@ -9,6 +9,7 @@ import { AutoAnalyzer } from './services/AutoAnalyzer';
 import { MicrostructureAnalyzer } from './services/MicrostructureAnalyzer';
 import { ProfileChartManager } from './services/ProfileChartManager';
 import { DebugOverlay } from './components/DebugOverlay';
+import CalibrationDialog from './components/CalibrationDialog';
 import { Ruler, Home, Menu, UploadCloud, RotateCcw, Settings, Activity, ZoomIn, ZoomOut, X, Bug } from 'lucide-react';
 import './styles/autothickness.css';
 
@@ -108,6 +109,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
     const [microPhaseMode, setMicroPhaseMode] = useState<'2-phase' | '3-phase'>('3-phase');
     const [roughnessOrientation, setRoughnessOrientation] = useState<'horizontal' | 'vertical'>('vertical');
     const [correctionMode, setCorrectionMode] = useState<'merge' | 'split' | 'reassign' | null>(null);
+    const [calibrationDialogPixels, setCalibrationDialogPixels] = useState<number | null>(null);
 
     // Ref to track selected measurement for hover callback (avoids stale closure)
     const selectedMeasurementRef = useRef<Measurement | null>(null);
@@ -196,8 +198,18 @@ const App: React.FC<AppProps> = ({ onBack }) => {
     }, [calibrationManager, addToast]);
 
     const autoLoadCalibrations = useCallback(async () => {
-        // Known files in Calibration folder (Moved to public/Calibration)
-        const filesToLoad = ['calib.cal', 'calib1.cal', 'calib12.cal', 'calib2.cal', 'calib3.cal'];
+        // Dynamically read file list from public/Calibration/index.json
+        // To add a new .cal file: place it in public/Calibration/ and add its filename to index.json
+        let filesToLoad: string[] = [];
+        try {
+            const indexResp = await fetch('./Calibration/index.json');
+            if (indexResp.ok) {
+                filesToLoad = await indexResp.json();
+            }
+        } catch (e) {
+            // Fallback: skip auto-load if index is missing
+        }
+
         let successCount = 0;
 
         for (const filename of filesToLoad) {
@@ -498,6 +510,33 @@ const App: React.FC<AppProps> = ({ onBack }) => {
 
         addToast('캘리브레이션', '변경된 설정이 모든 측정값에 적용되었습니다.', 'success');
     }, [calibrationManager, addToast]);
+
+    const handleCalibrationDialogConfirm = useCallback((realLength: number, unit: string, name: string) => {
+        const pixelLength = calibrationDialogPixels!;
+        calibrationManager.setCalibration(pixelLength, realLength, unit, name, '');
+        // 프리셋으로 자동 등록
+        calibrationManager.savePreset(name);
+        // .cal 파일 다운로드
+        const calContent = [
+            '[SPATIAL1]',
+            `CalibName=${name}`,
+            `UnitName=${unit}`,
+            `PixPerUnit=${(pixelLength / realLength).toFixed(8)},${(pixelLength / realLength).toFixed(8)}`,
+            'Origin=0,0',
+            'AngleOffset=0',
+            'SystemCal=1',
+        ].join('\n');
+        const blob = new Blob([calContent], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${name.replace(/[^a-zA-Z0-9가-힣_\-]/g, '_')}.cal`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setCalibrationDialogPixels(null);
+        setCalibrationVersion(v => v + 1);
+        addToast('캘리브레이션', `"${name}" 저장 및 등록 완료`, 'success');
+    }, [calibrationDialogPixels, calibrationManager, addToast]);
 
     const switchImage = async (index: number, list = imageList) => {
         if (index < 0 || index >= list.length) return;
@@ -1345,6 +1384,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                                         handleUpdateMeasurement(selectedMeasurement, updates, true);
                                     }
                                 }}
+                                onCalibrationLine={(pixels) => setCalibrationDialogPixels(pixels)}
                             />
                         )}
                     </div>
@@ -1457,6 +1497,15 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                     </div>
                 ))}
             </div>
+
+            {/* Calibration Dialog */}
+            {calibrationDialogPixels !== null && (
+                <CalibrationDialog
+                    pixelLength={calibrationDialogPixels}
+                    onConfirm={handleCalibrationDialogConfirm}
+                    onCancel={() => setCalibrationDialogPixels(null)}
+                />
+            )}
 
             {/* Custom Debug Overlay */}
             <DebugOverlay
