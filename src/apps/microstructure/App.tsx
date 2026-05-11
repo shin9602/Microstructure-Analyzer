@@ -13,8 +13,8 @@ import ResultsTable from './components/ResultsTable';
 import { v4 as uuidv4 } from 'uuid';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
-const STORAGE_KEY = 'xrd_materials_v5';
-const CUSTOM_MATERIALS_KEY = 'xrd_custom_materials_v5';
+const STORAGE_KEY = 'xrd_materials_v6';
+const CUSTOM_MATERIALS_KEY = 'xrd_custom_materials_v6';
 
 interface AppProps {
   onBack?: () => void;
