@@ -166,8 +166,15 @@ const App: React.FC<AppProps> = ({ onBack }) => {
 
   // Grain Size State
   const [kFactor, setKFactor] = useState<number>(0.9);
-  const [gsBatchResults, setGsBatchResults] = useState<any[]>([]);
-  const [gsRange, setGsRange] = useState<{ min: number; max: number } | null>(null);
+  // Multi-peak grain size: each entry holds plane name + its search range
+  const [gsSelectedPeaks, setGsSelectedPeaks] = useState<Array<{ plane: string; range: { min: number; max: number } }>>([
+    { plane: '(422)', range: { min: 122.59, max: 123.09 } },
+    { plane: '(111)', range: { min: 35.93, max: 36.43 } },
+  ]);
+  // Which peak is currently being edited (range drag on chart)
+  const [gsActivePeak, setGsActivePeak] = useState<string | null>(null);
+  // Batch results per peak: Record<plane, fileResult[]>
+  const [gsBatchResults, setGsBatchResults] = useState<Record<string, any[]>>({});
   const [gsWHAnalysis, setGsWHAnalysis] = useState<any>(null);
   const [gsWHExcludedPeaks, setGsWHExcludedPeaks] = useState<Set<string>>(new Set());
   const [gsFWHMData, setGsFWHMData] = useState<{
@@ -440,7 +447,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
         }
       }
     } else if (analysisMode === AnalysisMode.GRAIN_SIZE) {
-      if (activeFileId) {
+      if (activeFileId && gsActivePeak) {
         const file = files.find(f => f.id === activeFileId);
         if (file) {
           const shift = file.twoThetaShift || 0;
@@ -448,13 +455,17 @@ const App: React.FC<AppProps> = ({ onBack }) => {
           const res = calculateFWHM(shiftedData, min, max);
           if (res) {
             setGsFWHMData(res);
-            setCnTwoTheta(res.peak2Theta); // Pointer position for consistency
- 
-            // Perform batch calculation
-            const batch = handleBatchCalculateGS(min, max);
-            setGsBatchResults(batch);
-            setGsRange({ min, max });
+            setCnTwoTheta(res.peak2Theta);
           }
+          // Update the range for the active peak and recalculate batch
+          setGsSelectedPeaks(prev => {
+            const updated = prev.map(pk =>
+              pk.plane === gsActivePeak ? { ...pk, range: { min, max } } : pk
+            );
+            const newBatch = recalcAllGSPeaks(updated, files, kFactor, lambda);
+            setGsBatchResults(newBatch);
+            return updated;
+          });
           setChartMode('pan');
         }
       }
@@ -462,7 +473,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
   };
 
 
-  const handleBatchCalculateGS = (min: number, max: number) => {
+  const handleBatchCalculateGS = (plane: string, min: number, max: number) => {
     return files.map(file => {
       const shift = file.twoThetaShift || 0;
       const shiftedData = shift ? file.data.map(p => ({ ...p, twoTheta: p.twoTheta + shift })) : file.data;
@@ -480,6 +491,25 @@ const App: React.FC<AppProps> = ({ onBack }) => {
         status: 'OK'
       };
     });
+  };
+
+  const recalcAllGSPeaks = (peaks: typeof gsSelectedPeaks, currentFiles: typeof files, currentKFactor: number, currentLambda: number) => {
+    const newBatch: Record<string, any[]> = {};
+    peaks.forEach(pk => {
+      newBatch[pk.plane] = currentFiles.map(file => {
+        const shift = file.twoThetaShift || 0;
+        const shiftedData = shift ? file.data.map(p => ({ ...p, twoTheta: p.twoTheta + shift })) : file.data;
+        const res = calculateFWHM(shiftedData, pk.range.min, pk.range.max);
+        if (!res) return { fileId: file.id, filename: file.name, status: 'Error' };
+        const grainSize = calculateGrainSize(currentKFactor, currentLambda, res.fwhm, res.peak2Theta);
+        const rangeWidth = pk.range.max - pk.range.min;
+        const isNearBoundary =
+          res.peak2Theta < pk.range.min + rangeWidth * 0.1 ||
+          res.peak2Theta > pk.range.max - rangeWidth * 0.1;
+        return { fileId: file.id, filename: file.name, peak2Theta: res.peak2Theta, fwhm: res.fwhm, grainSize, fwhmData: res, status: 'OK', isNearBoundary };
+      });
+    });
+    return newBatch;
   };
 
   const handleBatchCalculateCN = (min2Theta: number, max2Theta: number) => {
@@ -515,13 +545,16 @@ const App: React.FC<AppProps> = ({ onBack }) => {
       if (entry && entry.status === 'OK') {
         setCnTwoTheta(entry.twoTheta);
       }
-    } else if (analysisMode === AnalysisMode.GRAIN_SIZE && gsRange) {
-      const entry = gsBatchResults.find(r => r.fileId === activeFileId);
-      if (entry && entry.status === 'OK' && entry.fwhmData) {
-        setGsFWHMData(entry.fwhmData);
+    } else if (analysisMode === AnalysisMode.GRAIN_SIZE && gsActivePeak) {
+      const peakResults = gsBatchResults[gsActivePeak];
+      if (peakResults) {
+        const entry = peakResults.find((r: any) => r.fileId === activeFileId);
+        if (entry && entry.status === 'OK' && entry.fwhmData) {
+          setGsFWHMData(entry.fwhmData);
+        }
       }
     }
-  }, [activeFileId, analysisMode, cnBatchResults, gsBatchResults, cnRange, gsRange]);
+  }, [activeFileId, analysisMode, cnBatchResults, gsBatchResults, cnRange, gsActivePeak]);
 
   // Re-calculate CN batch when lambda changes
   useEffect(() => {
@@ -531,13 +564,13 @@ const App: React.FC<AppProps> = ({ onBack }) => {
     }
   }, [lambda, files]);
 
-  // Re-calculate Grain Size batch when parameters change
+  // Re-calculate Grain Size batch when parameters change, and auto-calc on first load
   useEffect(() => {
-    if (analysisMode === AnalysisMode.GRAIN_SIZE && gsRange) {
-      const batch = handleBatchCalculateGS(gsRange.min, gsRange.max);
-      setGsBatchResults(batch);
+    if (gsSelectedPeaks.length > 0 && files.length > 0) {
+      const newBatch = recalcAllGSPeaks(gsSelectedPeaks, files, kFactor, lambda);
+      setGsBatchResults(newBatch);
     }
-  }, [lambda, kFactor, files]);
+  }, [lambda, kFactor, files, gsSelectedPeaks]);
 
   // --- File Handlers ---
 
@@ -1036,6 +1069,15 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                       activeFileId={activeFileId}
                       onSelectFile={setActiveFileId}
                       data={files.find(f => f.id === activeFileId)?.data || []}
+                      selectedPeaks={gsSelectedPeaks}
+                      onSelectedPeaksChange={(peaks) => {
+                        setGsSelectedPeaks(peaks);
+                        const newBatch = recalcAllGSPeaks(peaks, files, kFactor, lambda);
+                        setGsBatchResults(newBatch);
+                      }}
+                      activePeak={gsActivePeak}
+                      onActivePeakChange={setGsActivePeak}
+                      files={files}
                     />
                   )}
                 </div>

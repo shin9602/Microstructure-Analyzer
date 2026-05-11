@@ -83,7 +83,6 @@ export const MATERIALS: Record<string, MaterialPreset> = {
       '(200)': 100,
       '(220)': 46,
       '(311)': 25,
-      '(331)': 10,
       '(420)': 23,
       '(422)': 22,
     },
@@ -92,7 +91,6 @@ export const MATERIALS: Record<string, MaterialPreset> = {
       '(200)': 42.024,
       '(220)': 60.93,
       '(311)': 72.968,
-      '(331)': 102.763,
       '(420)': 106.575,
       '(422)': 122.836,
     },
@@ -101,7 +99,6 @@ export const MATERIALS: Record<string, MaterialPreset> = {
       '(200)': { min: 41.77, max: 42.27 },
       '(220)': { min: 60.68, max: 61.18 },
       '(311)': { min: 72.72, max: 73.22 },
-      '(331)': { min: 102.51, max: 103.01 },
       '(420)': { min: 106.33, max: 106.83 },
       '(422)': { min: 122.59, max: 123.09 },
     }
