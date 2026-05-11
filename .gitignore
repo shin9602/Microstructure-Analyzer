@@ -10,6 +10,9 @@ error.log
 launcher.log
 build_log.txt
 
+# GitHub token (절대 커밋 금지)
+token.txt
+
 # Temp files and results
 node_modules/
 dist/
