@@ -779,7 +779,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                 <h1 className="text-lg font-bold text-slate-800 tracking-tight">
                   Microstructure Analyzer
                 </h1>
-                <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">v5.3</span>
+                <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">v5.4</span>
               </div>
             </div>
           </div>
