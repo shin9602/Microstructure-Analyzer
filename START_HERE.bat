@@ -26,7 +26,7 @@ set /p LATEST_VER=<"%TEMP%\acver.txt"
 del "%TEMP%\acver.txt" >nul 2>&1
 
 if "!LATEST_VER!"=="" goto SKIP_UPDATE
-if "!CURRENT_VER!"=="!LATEST_VER!" (echo  Latest version. ^(%CURRENT_VER%^) & goto SKIP_UPDATE)
+if "!CURRENT_VER!"=="!LATEST_VER!" (echo  최신 버전입니다. ^(%CURRENT_VER%^) & goto SKIP_UPDATE)
 echo  New version: !LATEST_VER!
 set /p DO_UPDATE=  Update now? [Y/N]:
 if /i not "!DO_UPDATE!"=="Y" goto SKIP_UPDATE
