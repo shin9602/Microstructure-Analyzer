@@ -26,7 +26,7 @@ set /p LATEST_VER=<"%TEMP%\acver.txt"
 del "%TEMP%\acver.txt" >nul 2>&1
 
 if "!LATEST_VER!"=="" goto SKIP_UPDATE
-if "!CURRENT_VER!"=="!LATEST_VER!" (echo  최신 버전입니다. ^(%CURRENT_VER%^) & goto SKIP_UPDATE)
+if "!CURRENT_VER!"=="!LATEST_VER!" (echo  Already latest version. ^(%CURRENT_VER%^) & goto SKIP_UPDATE)
 echo  New version: !LATEST_VER!
 set /p DO_UPDATE=  Update now? [Y/N]:
 if /i not "!DO_UPDATE!"=="Y" goto SKIP_UPDATE
@@ -97,7 +97,7 @@ echo  [OK] Packages ready.
 
 :STEP4
 echo [4/5] npm packages...
-if exist "%ROOT%node_modules" goto STEP5
+if exist "%ROOT%node_modules\.bin\vite.cmd" goto STEP5
 echo  Installing npm packages...
 call npm install
 if !errorlevel! neq 0 (echo [ERROR] npm install failed. & goto END_PAUSE)
