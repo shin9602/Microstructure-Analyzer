@@ -14,8 +14,6 @@ import scipy.sparse as sp
 from scipy.sparse.csgraph import connected_components
 from scipy.ndimage import distance_transform_edt, median_filter
 from skimage.filters import threshold_otsu
-import tkinter as tk
-from tkinter import filedialog
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
