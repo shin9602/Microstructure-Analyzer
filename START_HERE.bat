@@ -107,6 +107,8 @@ echo [5/5] PostCSS...
 (echo // PostCSS handled inline in vite.config.ts & echo export default {}) > "%ROOT%postcss.config.js"
 
 set "PYTHON_EXE=%PY_EXE%"
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 echo.
 echo  Starting... ^(http://localhost:5173^)
 echo.

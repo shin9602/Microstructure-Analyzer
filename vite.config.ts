@@ -5,8 +5,18 @@ import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import { fileURLToPath } from 'url'
 import tailwindcss from 'tailwindcss'
 import autoprefixer from 'autoprefixer'
+
+const projectRoot = path.dirname(fileURLToPath(import.meta.url))
+
+function resolvePythonCommand(): string {
+  if (process.env.PYTHON_EXE) return process.env.PYTHON_EXE
+  const bundledPython = path.join(projectRoot, '_tools', 'python', 'python.exe')
+  if (process.platform === 'win32' && fs.existsSync(bundledPython)) return bundledPython
+  return 'python'
+}
 
 function pythonRunnerPlugin(): Plugin {
   return {
@@ -14,7 +24,7 @@ function pythonRunnerPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         if (req.url && req.url.startsWith('/api/clear-ebsd-temp')) {
-            const tempPath = path.resolve(process.cwd(), 'python', '.temp_ebsd');
+            const tempPath = path.resolve(projectRoot, 'python', '.temp_ebsd');
             if (fs.existsSync(tempPath)) {
               const files = fs.readdirSync(tempPath);
               for (const file of files) {
@@ -39,7 +49,7 @@ function pythonRunnerPlugin(): Plugin {
                return;
            }
            
-           const tempPath = path.resolve(process.cwd(), 'python', '.temp_ebsd');
+           const tempPath = path.resolve(projectRoot, 'python', '.temp_ebsd');
            if (!fs.existsSync(tempPath)) fs.mkdirSync(tempPath, { recursive: true });
            
            const writeStream = fs.createWriteStream(path.join(tempPath, filename));
@@ -52,7 +62,7 @@ function pythonRunnerPlugin(): Plugin {
 
         if (req.url && req.url.startsWith('/api/ebsd-results/')) {
            const requestedFile = decodeURIComponent(req.url.replace('/api/ebsd-results/', '').split('?')[0]);
-           const filePath = path.resolve(process.cwd(), 'python', '.temp_ebsd', requestedFile);
+           const filePath = path.resolve(projectRoot, 'python', '.temp_ebsd', requestedFile);
            if (!fs.existsSync(filePath)) {
                res.statusCode = 404;
                res.end('Not found');
@@ -83,14 +93,24 @@ function pythonRunnerPlugin(): Plugin {
           const compMap = urlObj.searchParams.get('comp_map')
           
           const scriptName = isAdvanced ? 'advanced_microstructure.py' : 'microstructure_analysis.py'
-          const pyPath = path.resolve(process.cwd(), 'python', scriptName)
-          const tempPath = path.resolve(process.cwd(), 'python', '.temp_ebsd')
+          const pyPath = path.resolve(projectRoot, 'python', scriptName)
+          const tempPath = path.resolve(projectRoot, 'python', '.temp_ebsd')
+          const scriptRelPath = path.join('python', scriptName)
+          const tempRelPath = path.join('python', '.temp_ebsd')
+
+          if (!fs.existsSync(pyPath)) {
+            res.write(`data: ${JSON.stringify({ type: 'error', message: `Python script not found: ${pyPath}` })}\n\n`)
+            res.write(`data: ${JSON.stringify({ type: 'done', code: 2 })}\n\n`)
+            res.end()
+            return
+          }
           
           res.write(`data: ${JSON.stringify({ type: 'info', message: `Starting Python Analyzer (${scriptName})...` })}\n\n`)
           
-          const args = [pyPath]
+          // Use relative paths + cwd to avoid Windows Korean-path encoding issues in Python argv
+          const args = [scriptRelPath]
           if (useTemp) {
-              args.push('--uploaded', tempPath)
+              args.push('--uploaded', tempRelPath)
               res.write(`data: ${JSON.stringify({ type: 'info', message: 'Using uploaded files...' })}\n\n`)
           } else {
               res.write(`data: ${JSON.stringify({ type: 'warning', message: 'PLEASE CHECK YOUR TASKBAR FOR THE FOLDER SELECTION WINDOW! (tkinter window)' })}\n\n`)
@@ -103,9 +123,15 @@ function pythonRunnerPlugin(): Plugin {
               res.write(`data: ${JSON.stringify({ type: 'info', message: `Composition Mode Enabled (Per-file override supported)` })}\n\n`)
           }
 
-          // Use PYTHON_EXE env var from launcher, or fallback to system python/py
-          const pythonCmd = process.env.PYTHON_EXE || 'python'
-          const pythonProcess = spawn(pythonCmd, ['-u', ...args])
+          const pythonCmd = resolvePythonCommand()
+          const pythonProcess = spawn(pythonCmd, ['-u', ...args], {
+            cwd: projectRoot,
+            env: {
+              ...process.env,
+              PYTHONUTF8: '1',
+              PYTHONIOENCODING: 'utf-8',
+            },
+          })
 
           pythonProcess.stdout.on('data', (data) => {
             const str = data.toString()
