@@ -11,19 +11,25 @@
 
 ---
 
-### 1. 코드 푸시
+### 1. 코드 푸시 + 버전업
 ```powershell
-git add <변경파일>
+# version.txt를 새 버전으로 수정 (예: v1.0.12)
+git add <변경파일> version.txt
 git commit -m "..."
 git push origin main
 ```
 
+> **코드 변경 시 version.txt 반드시 함께 올릴 것.** 푸시만 하고 버전업 안 하면 다른 PC에 업데이트가 전달되지 않음.
+
 ---
 
-### 2. GitHub Release 생성 + ZIP 업로드
-토큰 파일: `token.txt` (프로젝트 루트, 절대 커밋 금지)
+### 2. GitHub Release 생성 + ZIP 업로드 (자동)
+```powershell
+.\release.ps1 -Body "변경 내용 요약"
+```
+`version.txt`의 버전을 읽어 릴리즈 생성 → ZIP 빌드 → 업로드 → 검증 → 다운로드 테스트까지 자동 실행.
 
-> **주의: 이 프로젝트는 OneDrive 폴더에 있어서 파일들이 심볼릭 링크로 저장됨.**
+수동 실행이 필요할 때만 아래 스크립트 사용:
 > ZIP 생성 시 반드시 **robocopy로 임시 폴더에 실제 파일을 복사한 뒤** ZIP을 만들어야 함.
 > `CreateEntryFromFile()`을 OneDrive 원본 경로에 직접 사용하면 파일이 0바이트로 들어감.
 > 또한 `Where-Object` 파이프라인 대신 **`foreach` 루프**를 사용해야 필터가 정상 동작함.
