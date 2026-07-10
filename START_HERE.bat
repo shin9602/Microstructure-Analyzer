@@ -70,9 +70,9 @@ echo  [OK] Node.js ready.
 :STEP2
 echo [2/5] Python...
 set "PY_EXE=%TOOLS%\python\python.exe"
+if exist "%PY_EXE%" goto STEP3
 python --version >nul 2>&1
 if !errorlevel! equ 0 (set "PY_EXE=python" & goto STEP3)
-if exist "%PY_EXE%" goto STEP3
 echo  Downloading Python...
 powershell -NoProfile -NonInteractive -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12';Invoke-WebRequest https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip -OutFile '%TOOLS%\python.zip' -UseBasicParsing"
 if not exist "%TOOLS%\python.zip" (echo [ERROR] Python download failed. & goto END_PAUSE)

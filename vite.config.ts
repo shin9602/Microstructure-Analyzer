@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import { spawn } from 'child_process'
+import { spawn, execSync } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -11,11 +11,79 @@ import autoprefixer from 'autoprefixer'
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url))
 
+function hasNonAscii(value: string): boolean {
+  return /[^\x00-\x7F]/.test(value)
+}
+
+function getWindowsShortPath(longPath: string): string {
+  if (process.platform !== 'win32' || !fs.existsSync(longPath)) return longPath
+  try {
+    const escaped = longPath.replace(/'/g, "''")
+    const short = execSync(
+      `powershell -NoProfile -Command "(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${escaped}').ShortPath"`,
+      { encoding: 'utf8' },
+    ).trim()
+    if (short && fs.existsSync(short)) return short
+  } catch {
+    // Fall back to the original path when 8.3 names are unavailable.
+  }
+  return longPath
+}
+
+function isWindowsStorePython(exe: string): boolean {
+  const normalized = exe.toLowerCase()
+  return normalized.includes('windowsapps')
+    || normalized.endsWith('\\python.exe') && normalized.includes('microsoft')
+    || exe === 'python'
+    || exe === 'py'
+}
+
 function resolvePythonCommand(): string {
-  if (process.env.PYTHON_EXE) return process.env.PYTHON_EXE
   const bundledPython = path.join(projectRoot, '_tools', 'python', 'python.exe')
-  if (process.platform === 'win32' && fs.existsSync(bundledPython)) return bundledPython
+  if (process.platform === 'win32' && fs.existsSync(bundledPython)) {
+    return bundledPython
+  }
+
+  const envPython = process.env.PYTHON_EXE?.trim()
+  if (envPython && !isWindowsStorePython(envPython)) {
+    if (path.isAbsolute(envPython) && fs.existsSync(envPython)) return envPython
+    if (!path.isAbsolute(envPython)) return envPython
+  }
+
   return 'python'
+}
+
+function spawnPythonProcess(pythonCmd: string, args: string[], cwd: string) {
+  const env = {
+    ...process.env,
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8',
+  }
+
+  if (process.platform !== 'win32' || !hasNonAscii(cwd)) {
+    return spawn(pythonCmd, ['-u', ...args], { cwd, env })
+  }
+
+  const shortCwd = getWindowsShortPath(cwd)
+  const shortPython = path.isAbsolute(pythonCmd) ? getWindowsShortPath(pythonCmd) : pythonCmd
+  const batPath = path.join(os.tmpdir(), `ac_ebsd_${Date.now()}.bat`)
+  const quotedArgs = args.map((arg) => `"${arg.replace(/"/g, '""')}"`).join(' ')
+  const batContent = [
+    '@echo off',
+    'chcp 65001 >nul',
+    `cd /d "${shortCwd.replace(/"/g, '""')}"`,
+    'set PYTHONUTF8=1',
+    'set PYTHONIOENCODING=utf-8',
+    `"${shortPython.replace(/"/g, '""')}" -u ${quotedArgs}`,
+  ].join('\r\n')
+
+  fs.writeFileSync(batPath, batContent, 'utf8')
+
+  const child = spawn('cmd.exe', ['/d', '/c', batPath], { env, windowsHide: true })
+  child.on('close', () => {
+    try { fs.unlinkSync(batPath) } catch { /* ignore */ }
+  })
+  return child
 }
 
 function pythonRunnerPlugin(): Plugin {
@@ -124,14 +192,8 @@ function pythonRunnerPlugin(): Plugin {
           }
 
           const pythonCmd = resolvePythonCommand()
-          const pythonProcess = spawn(pythonCmd, ['-u', ...args], {
-            cwd: projectRoot,
-            env: {
-              ...process.env,
-              PYTHONUTF8: '1',
-              PYTHONIOENCODING: 'utf-8',
-            },
-          })
+          res.write(`data: ${JSON.stringify({ type: 'info', message: `Python: ${path.basename(pythonCmd)}` })}\n\n`)
+          const pythonProcess = spawnPythonProcess(pythonCmd, args, projectRoot)
 
           pythonProcess.stdout.on('data', (data) => {
             const str = data.toString()
