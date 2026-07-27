@@ -120,10 +120,37 @@ function pythonRunnerPlugin(): Plugin {
            const tempPath = path.resolve(projectRoot, 'python', '.temp_ebsd');
            if (!fs.existsSync(tempPath)) fs.mkdirSync(tempPath, { recursive: true });
            
-           const writeStream = fs.createWriteStream(path.join(tempPath, filename));
+           const destPath = path.join(tempPath, filename);
+           const writeStream = fs.createWriteStream(destPath);
            req.pipe(writeStream);
            req.on('end', () => {
-             res.end(JSON.stringify({ success: true }));
+             const lower = filename.toLowerCase();
+             if (!lower.endsWith('.osc')) {
+               res.end(JSON.stringify({ success: true, file: filename }));
+               return;
+             }
+             // Auto-convert EDAX/TSL .osc → .ang (MTEX oscData port)
+             const angName = filename.replace(/\.osc$/i, '.ang');
+             const angPath = path.join(tempPath, angName);
+             const converter = path.join('python', 'osc_to_ang.py');
+             const tempRel = path.join('python', '.temp_ebsd');
+             const args = [
+               converter,
+               path.join(tempRel, filename),
+               '-o',
+               path.join(tempRel, angName),
+             ];
+             const py = spawnPythonProcess(resolvePythonCommand(), args, projectRoot);
+             let err = '';
+             py.stderr.on('data', (d) => { err += String(d); });
+             py.on('close', (code) => {
+               if (code !== 0 || !fs.existsSync(angPath)) {
+                 res.statusCode = 500;
+                 res.end(JSON.stringify({ success: false, error: err || `osc_to_ang exit ${code}` }));
+                 return;
+               }
+               res.end(JSON.stringify({ success: true, file: angName, convertedFrom: filename }));
+             });
            });
            return;
         }

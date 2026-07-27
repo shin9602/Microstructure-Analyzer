@@ -44,6 +44,21 @@ interface AnalysisResult {
   images: string[];
 }
 
+const isEbsdInputFile = (name: string) => {
+  const n = name.toLowerCase();
+  return n.endsWith('.ang') || n.endsWith('.osc');
+};
+
+/** Co wt% map keys must match analyzed .ang basenames (OSC is converted on upload). */
+const remapCompMapKeys = (configs: Record<string, number>): Record<string, number> => {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(configs)) {
+    const key = k.toLowerCase().endsWith('.osc') ? k.replace(/\.osc$/i, '.ang') : k;
+    out[key] = v;
+  }
+  return out;
+};
+
 const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
   const [logs, setLogs] = useState<LogMessage[]>([]);
   const [results, setResults] = useState<AnalysisResult | null>(null);
@@ -78,24 +93,31 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
     setProgressPct(0);
     
     let useTemp = false;
-    if (files.length > 0) {
-      useTemp = true;
-      setLogs(prev => [...prev, { type: 'info', message: 'Preparing temporary context...' }]);
-      
-      const clearRes = await fetch('/api/clear-ebsd-temp');
-      if (!clearRes.ok) throw new Error('Failed to clear temp directory');
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        setLogs(prev => [...prev, { type: 'info', message: `Uploading ${file.name} (${i + 1}/${files.length})...` }]);
-        await fetch(`/api/upload-ebsd?filename=${encodeURIComponent(file.name)}`, {
-          method: 'POST',
-          body: file
-        });
-      }
-    }
-
     try {
+      if (files.length > 0) {
+        useTemp = true;
+        setLogs(prev => [...prev, { type: 'info', message: 'Preparing temporary context...' }]);
+        
+        const clearRes = await fetch('/api/clear-ebsd-temp');
+        if (!clearRes.ok) throw new Error('Failed to clear temp directory');
+
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          setLogs(prev => [...prev, { type: 'info', message: `Uploading ${file.name} (${i + 1}/${files.length})...` }]);
+          const up = await fetch(`/api/upload-ebsd?filename=${encodeURIComponent(file.name)}`, {
+            method: 'POST',
+            body: file
+          });
+          const body = await up.json().catch(() => ({} as { success?: boolean; file?: string; convertedFrom?: string; error?: string }));
+          if (!up.ok || body.success === false) {
+            throw new Error(body.error || `Upload failed: ${file.name}`);
+          }
+          if (body.convertedFrom) {
+            setLogs(prev => [...prev, { type: 'success', message: `Converted ${body.convertedFrom} → ${body.file}` }]);
+          }
+        }
+      }
+
       setLogs(prev => [...prev, { type: 'info', message: 'Initializing EBSD Analysis...' }]);
       
       const params = new URLSearchParams();
@@ -103,7 +125,7 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
       if (useTemp) params.append('temp', '1');
       if (compositionMode) {
         params.append('co_wt', coWt.toString());
-        params.append('comp_map', JSON.stringify(fileConfigs));
+        params.append('comp_map', JSON.stringify(remapCompMapKeys(fileConfigs)));
       }
 
       const es = new EventSource(`/api/run-ebsd?${params.toString()}`);
@@ -157,7 +179,7 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
         setLogs(prev => [...prev, { type: 'error', message: 'Connection lost or server error.' }]);
       };
     } catch (error: any) {
-      setLogs(prev => [...prev, { type: 'error', message: `Failed to connect: ${error.message}` }]);
+      setLogs(prev => [...prev, { type: 'error', message: `Failed: ${error.message}` }]);
       setIsProcessing(false);
     }
   };
@@ -181,7 +203,7 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
     setIsDragging(false);
     
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const droppedFiles = Array.from(e.dataTransfer.files).filter(f => f.name.toLowerCase().endsWith('.ang'));
+      const droppedFiles = Array.from(e.dataTransfer.files).filter(f => isEbsdInputFile(f.name));
       if (droppedFiles.length > 0) {
         setFiles(prev => {
           const newFiles = [...prev];
@@ -198,7 +220,7 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      const selectedFiles = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.ang'));
+      const selectedFiles = Array.from(e.target.files).filter(f => isEbsdInputFile(f.name));
       setFiles(prev => {
         const newFiles = [...prev];
         selectedFiles.forEach(df => {
@@ -230,7 +252,7 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
                   <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
                       <UploadCloud size={40} className="text-blue-500" />
                   </div>
-                  <h2 className="text-2xl font-bold text-slate-800 mb-2">Drop .ang files here</h2>
+                  <h2 className="text-2xl font-bold text-slate-800 mb-2">Drop .ang / .osc files here</h2>
                   <p className="text-slate-500">Release to add them to your analysis queue</p>
               </div>
           </div>
@@ -243,8 +265,8 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
               <FileText size={20} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-slate-800">EBSD Analysis (.ang Microstructure Analysis)</h2>
-              <p className="text-sm text-slate-500 font-medium">Analyze .ang files directly from your PC</p>
+              <h2 className="text-lg font-bold text-slate-800">EBSD Analysis (.ang / .osc)</h2>
+              <p className="text-sm text-slate-500 font-medium">Analyze .ang or EDAX .osc files (osc auto-converts to .ang)</p>
             </div>
           </div>
           {onBack && (
@@ -273,7 +295,7 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
                   type="file" 
                   id="ebsd-file-upload" 
                   multiple 
-                  accept=".ang"
+                  accept=".ang,.osc"
                   className="hidden" 
                   onChange={handleFileSelect}
                 />
@@ -293,7 +315,12 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
                     <div className="bg-slate-100 p-2 rounded-lg text-slate-500">
                         <FileText size={16} />
                     </div>
-                    <span className="truncate flex-1 font-bold text-slate-700 text-sm">{file.name}</span>
+                    <span className="truncate flex-1 font-bold text-slate-700 text-sm">
+                      {file.name}
+                      {file.name.toLowerCase().endsWith('.osc') && (
+                        <span className="ml-2 text-[10px] font-semibold text-amber-600 uppercase tracking-wide">→ .ang</span>
+                      )}
+                    </span>
                     
                     {compositionMode && (
                         <div className="flex items-center gap-2 bg-blue-50/50 px-3 py-1.5 rounded-lg border border-blue-100 animate-in fade-in slide-in-from-right-2">
@@ -319,8 +346,8 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
               </div>
             ) : (
               <div className="text-center py-6 border-2 border-dashed border-slate-200 rounded-lg bg-white">
-                <p className="text-slate-500 text-sm">Drag & drop .ang files here, or click Browse.</p>
-                <p className="text-slate-400 text-xs mt-1">If no files are added, it will launch the folder selection window.</p>
+                <p className="text-slate-500 text-sm">Drag & drop .ang / .osc files here, or click Browse.</p>
+                <p className="text-slate-400 text-xs mt-1">.osc is converted to .ang on upload. If no files are added, folder selection opens.</p>
               </div>
             )}
           </div>

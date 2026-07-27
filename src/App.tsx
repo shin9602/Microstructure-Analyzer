@@ -130,7 +130,7 @@ const Launcher: React.FC = () => {
                             </div>
                             <h2 className="text-2xl font-bold mb-3 text-white">EBSD Analysis</h2>
                             <p className="text-slate-400 mb-6 leading-relaxed">
-                                미세조직 .ang 파일 단위 자동화 분석: 위상 비율 계산, 그레인 사이즈(WC/Gamma), 형태학 분석을 지원합니다.
+                                미세조직 .ang / .osc 파일 단위 자동화 분석: 위상 비율 계산, 그레인 사이즈(WC/Gamma), 형태학 분석을 지원합니다.
                             </p>
                             <div className="flex items-center text-amber-400 font-medium group-hover:translate-x-1 transition-transform">
                                 Launch Application <ArrowRight size={16} className="ml-2" />
