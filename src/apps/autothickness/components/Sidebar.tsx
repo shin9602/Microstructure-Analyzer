@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import type { CalibrationManager } from '../services/CalibrationManager';
 import type { ImageManager } from '../services/ImageManager';
+import { LINE_LAYER_TYPES, type LineLayerType } from '../constants';
 
 interface SidebarProps {
     currentTool: string | null;
@@ -37,6 +38,8 @@ interface SidebarProps {
     onImageManagerChange: () => void;
     microPhaseMode: '2-phase' | '3-phase';
     onMicroPhaseModeChange: (mode: '2-phase' | '3-phase') => void;
+    lineLayerType: LineLayerType;
+    onLineLayerTypeChange: (layer: LineLayerType) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -52,7 +55,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     imageManager,
     onImageManagerChange,
     microPhaseMode,
-    onMicroPhaseModeChange
+    onMicroPhaseModeChange,
+    lineLayerType,
+    onLineLayerTypeChange
 }) => {
     const [presets, setPresets] = useState<Record<string, any>>({});
     const [selectedPreset, setSelectedPreset] = useState('');
@@ -217,6 +222,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <div className="section-title text-slate-500 mb-3">측정 도구</div>
                 <div className="flex flex-col gap-2">
                     {toolBtn('line', '선 측정', 'L', <Minus className="-rotate-45" size={16} />)}
+
+                    {/* Layer type selector for OM line measurements */}
+                    {currentTool === 'line' && (
+                        <div className="mt-1 bg-blue-50 border border-blue-100 rounded-lg p-3 animate-in fade-in slide-in-from-top-2 duration-300">
+                            <p className="text-[10px] font-bold text-blue-700 mb-2 flex items-center gap-1.5">
+                                <Layers size={12} /> 층 종류 선택
+                            </p>
+                            <div className="grid grid-cols-2 gap-1.5">
+                                {LINE_LAYER_TYPES.map((layer) => (
+                                    <button
+                                        key={layer}
+                                        onClick={() => onLineLayerTypeChange(layer)}
+                                        className={`py-1.5 rounded border text-[10px] font-bold transition-all ${lineLayerType === layer
+                                            ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
+                                            : 'bg-white border-slate-200 text-slate-500 hover:border-blue-300'}`}
+                                    >
+                                        {layer}
+                                    </button>
+                                ))}
+                            </div>
+                            <p className="text-[9px] text-blue-500 mt-2 leading-tight opacity-80">
+                                * 선택한 층으로 선 측정값이 저장됩니다. (현재: {lineLayerType})
+                            </p>
+                        </div>
+                    )}
 
                     {appMode === 'om' && (
                         <>

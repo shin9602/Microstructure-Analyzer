@@ -11,6 +11,7 @@ import { ProfileChartManager } from './services/ProfileChartManager';
 import { DebugOverlay } from './components/DebugOverlay';
 import CalibrationDialog from './components/CalibrationDialog';
 import { Ruler, Home, Menu, UploadCloud, RotateCcw, Settings, Activity, ZoomIn, ZoomOut, X, Bug } from 'lucide-react';
+import { DEFAULT_LINE_LAYER, type LineLayerType } from './constants';
 import './styles/autothickness.css';
 
 interface AppProps {
@@ -107,6 +108,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
     const [zoomLevel, setZoomLevel] = useState(100);
     const [highlightLine, setHighlightLine] = useState<{ type: 'vertical' | 'horizontal'; pos: number; start: number; end: number } | null>(null);
     const [microPhaseMode, setMicroPhaseMode] = useState<'2-phase' | '3-phase'>('3-phase');
+    const [lineLayerType, setLineLayerType] = useState<LineLayerType>(DEFAULT_LINE_LAYER);
     const [roughnessOrientation, setRoughnessOrientation] = useState<'horizontal' | 'vertical'>('vertical');
     const [correctionMode, setCorrectionMode] = useState<'merge' | 'split' | 'reassign' | null>(null);
     const [calibrationDialogPixels, setCalibrationDialogPixels] = useState<number | null>(null);
@@ -641,6 +643,21 @@ const App: React.FC<AppProps> = ({ onBack }) => {
 
 
     const handleUpdateMeasurement = useCallback((measurement: Measurement, updates: any, forceAnalysis: boolean = false) => {
+        // Layer type label change for OM line measurements (no re-analysis needed)
+        if (updates.hasOwnProperty('layerType') && (measurement.type === 'line' || measurement.type === 'parallel')) {
+            const updatedMeas = new Measurement(measurement.type, {
+                ...measurement.data,
+                layerType: updates.layerType
+            });
+            updatedMeas.id = measurement.id;
+            updatedMeas.selected = true;
+            updatedMeas.locked = measurement.locked;
+            setMeasurements(prev => prev.map(m => m.id === measurement.id ? updatedMeas : m));
+            setSelectedMeasurement(updatedMeas);
+            selectedMeasurementRef.current = updatedMeas;
+            return;
+        }
+
         if (measurement.type === 'microstructure') {
             const hasUpdate = forceAnalysis ||
                 updates.hasOwnProperty('t1') ||
@@ -1158,7 +1175,8 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                 const value = real !== null ? real.toFixed(4) : px.toFixed(2);
                 const unit = real !== null ? calibrationManager.unit : 'px';
                 const nameWithoutExt = name.replace(/\.[^/.]+$/, '');
-                rows.push(`${nameWithoutExt},${lineIdx + 1},${value},${unit}`);
+                const layer = m.data.layerType || '';
+                rows.push(`${nameWithoutExt},${lineIdx + 1},${layer},${value},${unit}`);
             });
         });
 
@@ -1168,7 +1186,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
         }
 
         let csv = '﻿'; // BOM
-        csv += '파일명,선 번호,두께,단위\n';
+        csv += '파일명,선 번호,층종류,두께,단위\n';
         csv += rows.join('\n');
 
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -1196,6 +1214,8 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                 details = Object.entries(m.data.results)
                     .map(([k, v]) => `${k}:${(v as number).toFixed(2)}`)
                     .join('|');
+            } else if ((m.type === 'line' || m.type === 'parallel') && m.data?.layerType) {
+                details = `층종류:${m.data.layerType}`;
             } else if (m.type === 'microstructure') {
                 const d = m.data;
                 const stats = [
@@ -1313,6 +1333,8 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                         onAppModeChange={setAppMode}
                         microPhaseMode={microPhaseMode}
                         onMicroPhaseModeChange={setMicroPhaseMode}
+                        lineLayerType={lineLayerType}
+                        onLineLayerTypeChange={setLineLayerType}
                     />
                 </div>
 
@@ -1378,6 +1400,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                                 roughnessOrientation={roughnessOrientation}
                                 imageVersion={imageVersion}
                                 microPhaseMode={microPhaseMode}
+                                lineLayerType={lineLayerType}
                                 correctionMode={correctionMode}
                                 onManualCorrection={(updates: any) => {
                                     if (selectedMeasurement) {

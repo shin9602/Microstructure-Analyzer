@@ -24,6 +24,7 @@ export interface CanvasAreaProps {
     roughnessOrientation: 'horizontal' | 'vertical';
     imageVersion?: number;
     microPhaseMode: '2-phase' | '3-phase';
+    lineLayerType?: string;
     correctionMode?: 'merge' | 'split' | 'reassign' | null;
     onManualCorrection?: (updates: any) => void;
     onCalibrationLine?: (pixelLength: number) => void;
@@ -44,7 +45,7 @@ const CanvasArea = forwardRef<CanvasAreaHandle, CanvasAreaProps>((props, ref) =>
         imageManager, calibrationManager, measurements, setMeasurements,
         currentTool, setTool, onSelectionChange, analysisMode,
         onProfileUpdate, onRoughnessProfileUpdate, alStartThreshold, alEndThreshold,
-        imageVersion, microPhaseMode, correctionMode, onManualCorrection, onCalibrationLine
+        imageVersion, microPhaseMode, lineLayerType, correctionMode, onManualCorrection, onCalibrationLine
     } = props;
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -432,7 +433,11 @@ const CanvasArea = forwardRef<CanvasAreaHandle, CanvasAreaProps>((props, ref) =>
                 }
             }
         } else if (currentTool === 'line') {
-            const meas = new Measurement('line', { x1: start.x, y1: start.y, x2: end.x, y2: end.y });
+            const meas = new Measurement('line', {
+                x1: start.x, y1: start.y, x2: end.x, y2: end.y,
+                layerType: lineLayerType || 'Al2O3',
+                timestamp: new Date().toLocaleTimeString()
+            });
             const imageData = imageManager.getImageData();
             if (imageData && onProfileUpdate) {
                 const points = AutoAnalyzer.getLineProfile(imageData, start, end);
@@ -461,7 +466,7 @@ const CanvasArea = forwardRef<CanvasAreaHandle, CanvasAreaProps>((props, ref) =>
             }
         }
         redraw();
-    }, [currentTool, imageManager, calibrationManager, setMeasurements, redraw, onProfileUpdate, setTool, performAutoMeasure, performRoughnessOnROI, correctionMode, onManualCorrection, measurements]);
+    }, [currentTool, imageManager, calibrationManager, setMeasurements, redraw, onProfileUpdate, setTool, performAutoMeasure, performRoughnessOnROI, correctionMode, onManualCorrection, measurements, lineLayerType, microPhaseMode, onSelectionChange]);
 
     const toggleEdgeView = useCallback(() => {
         if (!showEdges) {

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Measurement } from '../services/Measurement';
 import { CalibrationManager } from '../services/CalibrationManager';
 import { Layers, Download, CheckCircle2, Activity, X, Settings, Info, TrendingUp } from 'lucide-react';
+import { LINE_LAYER_TYPES } from '../constants';
 
 interface ResultsPanelProps {
     measurements: Measurement[];
@@ -140,6 +141,28 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
                         )}
                     </div>
                 </div>
+
+            {/* Layer type editor for selected line measurement */}
+            {selectedMeasurement && (selectedMeasurement.type === 'line' || selectedMeasurement.type === 'parallel') && (
+                <div className="bg-blue-50 rounded-md p-2.5 mb-2 border border-blue-100">
+                    <div className="text-[11px] font-bold text-blue-600 mb-1.5 flex items-center gap-1">
+                        <Layers size={12} /> 층 종류
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                        {LINE_LAYER_TYPES.map((layer) => (
+                            <button
+                                key={layer}
+                                onClick={() => onUpdateMeasurement && onUpdateMeasurement(selectedMeasurement, { layerType: layer })}
+                                className={`py-1.5 rounded border text-[10px] font-bold transition-all ${selectedMeasurement.data.layerType === layer
+                                    ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
+                                    : 'bg-white border-slate-200 text-slate-500 hover:border-blue-300'}`}
+                            >
+                                {layer}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             {/* Area-profile details */}
             {selectedAreaDetails && (

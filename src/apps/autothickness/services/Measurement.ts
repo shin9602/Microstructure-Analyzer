@@ -214,7 +214,9 @@ export class Measurement {
         const length = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
         const angle = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI;
 
-        const label = `${calibrationManager.formatMeasurement(length)} | ${angle.toFixed(1)}°`;
+        const label = this.data.layerType
+            ? `[${this.data.layerType}] ${calibrationManager.formatMeasurement(length)} | ${angle.toFixed(1)}°`
+            : `${calibrationManager.formatMeasurement(length)} | ${angle.toFixed(1)}°`;
         this.drawLabel(ctx, imageManager, midX, midY - 10 / imageManager.scale, label);
     }
 
@@ -290,7 +292,8 @@ export class Measurement {
                 Math.pow(this.data.x2 - this.data.x1, 2) +
                 Math.pow(this.data.y2 - this.data.y1, 2)
             );
-            return calibrationManager.formatMeasurement(length);
+            const formatted = calibrationManager.formatMeasurement(length);
+            return this.data.layerType ? `${this.data.layerType} ${formatted}` : formatted;
         } else if (this.type === 'profile') {
             if (this.data.roughness) {
                 const r = this.data.roughness;
