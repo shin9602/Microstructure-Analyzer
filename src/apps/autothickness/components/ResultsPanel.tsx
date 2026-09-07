@@ -147,7 +147,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
                 <div className="bg-blue-50 rounded-md p-2.5 mb-2 border border-blue-100">
                     <div className="text-[11px] font-bold text-blue-600 mb-1.5 flex items-center gap-1">
                         <Layers size={12} /> 층 종류
-                        <span className="ml-auto font-normal text-[9px] text-blue-400">Tab: Al2O3 → Bonding → TiCN</span>
+                        <span className="ml-auto font-normal text-[9px] text-blue-400">Tab: 데코층 → Al2O3 → Bonding → TiCN</span>
                     </div>
                     <div className="grid grid-cols-2 gap-1.5">
                         {LINE_LAYER_TYPES.map((layer) => (

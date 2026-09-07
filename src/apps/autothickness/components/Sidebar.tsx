@@ -244,7 +244,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 ))}
                             </div>
                             <p className="text-[9px] text-blue-500 mt-2 leading-tight opacity-80">
-                                * Tab: Al2O3 → Bonding → TiCN (현재: {lineLayerType})
+                                * Tab: 데코층 → Al2O3 → Bonding → TiCN (현재: {lineLayerType})
                             </p>
                         </div>
                     )}
