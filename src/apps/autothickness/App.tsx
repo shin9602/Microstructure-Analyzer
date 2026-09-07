@@ -11,7 +11,7 @@ import { ProfileChartManager } from './services/ProfileChartManager';
 import { DebugOverlay } from './components/DebugOverlay';
 import CalibrationDialog from './components/CalibrationDialog';
 import { Ruler, Home, Menu, UploadCloud, RotateCcw, Settings, Activity, ZoomIn, ZoomOut, X, Bug } from 'lucide-react';
-import { DEFAULT_LINE_LAYER, type LineLayerType } from './constants';
+import { DEFAULT_LINE_LAYER, nextLineLayerOnTab, type LineLayerType } from './constants';
 import './styles/autothickness.css';
 
 interface AppProps {
@@ -109,6 +109,8 @@ const App: React.FC<AppProps> = ({ onBack }) => {
     const [highlightLine, setHighlightLine] = useState<{ type: 'vertical' | 'horizontal'; pos: number; start: number; end: number } | null>(null);
     const [microPhaseMode, setMicroPhaseMode] = useState<'2-phase' | '3-phase'>('3-phase');
     const [lineLayerType, setLineLayerType] = useState<LineLayerType>(DEFAULT_LINE_LAYER);
+    const lineLayerTypeRef = useRef<LineLayerType>(lineLayerType);
+    lineLayerTypeRef.current = lineLayerType;
     const [roughnessOrientation, setRoughnessOrientation] = useState<'horizontal' | 'vertical'>('vertical');
     const [correctionMode, setCorrectionMode] = useState<'merge' | 'split' | 'reassign' | null>(null);
     const [calibrationDialogPixels, setCalibrationDialogPixels] = useState<number | null>(null);
@@ -840,7 +842,20 @@ const App: React.FC<AppProps> = ({ onBack }) => {
     // Keyboard Shortcuts (Moved here to fix hosting issue)
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+
+            if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                e.preventDefault();
+                const next = nextLineLayerOnTab(lineLayerTypeRef.current, e.shiftKey);
+                lineLayerTypeRef.current = next;
+                setLineLayerType(next);
+                const selected = selectedMeasurementRef.current;
+                if (selected && (selected.type === 'line' || selected.type === 'parallel')) {
+                    handleUpdateMeasurement(selected, { layerType: next });
+                }
+                addToast('층 종류', `${next} (${e.shiftKey ? 'Shift+Tab' : 'Tab'})`, 'info');
+                return;
+            }
 
             if (e.key.toLowerCase() === 'h') {
                 const selected = selectedMeasurementRef.current;
@@ -903,7 +918,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [roughnessOrientation, imageManager, calibrationManager, addToast, handleSelectMeasurement]);
+    }, [roughnessOrientation, imageManager, calibrationManager, addToast, handleSelectMeasurement, handleUpdateMeasurement]);
 
     const handleDeleteMeasurement = useCallback((index: number) => {
         pushUndo();

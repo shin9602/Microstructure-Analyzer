@@ -228,6 +228,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <div className="mt-1 bg-blue-50 border border-blue-100 rounded-lg p-3 animate-in fade-in slide-in-from-top-2 duration-300">
                             <p className="text-[10px] font-bold text-blue-700 mb-2 flex items-center gap-1.5">
                                 <Layers size={12} /> 층 종류 선택
+                                <span className="tool-shortcut ml-auto">Tab</span>
                             </p>
                             <div className="grid grid-cols-2 gap-1.5">
                                 {LINE_LAYER_TYPES.map((layer) => (
@@ -243,7 +244,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 ))}
                             </div>
                             <p className="text-[9px] text-blue-500 mt-2 leading-tight opacity-80">
-                                * 선택한 층으로 선 측정값이 저장됩니다. (현재: {lineLayerType})
+                                * Tab: Al2O3 → Bonding → TiCN (현재: {lineLayerType})
                             </p>
                         </div>
                     )}

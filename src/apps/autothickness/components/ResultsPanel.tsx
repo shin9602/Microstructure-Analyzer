@@ -147,6 +147,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
                 <div className="bg-blue-50 rounded-md p-2.5 mb-2 border border-blue-100">
                     <div className="text-[11px] font-bold text-blue-600 mb-1.5 flex items-center gap-1">
                         <Layers size={12} /> 층 종류
+                        <span className="ml-auto font-normal text-[9px] text-blue-400">Tab: Al2O3 → Bonding → TiCN</span>
                     </div>
                     <div className="grid grid-cols-2 gap-1.5">
                         {LINE_LAYER_TYPES.map((layer) => (
@@ -700,6 +701,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
                         <div className="flex items-center justify-between"><span className="text-slate-400">선 측정</span><kbd className="bg-white border rounded px-1 min-w-[18px] text-center shadow-sm">L</kbd></div>
                         <div className="flex items-center justify-between"><span className="text-slate-400">사각형</span><kbd className="bg-white border rounded px-1 min-w-[18px] text-center shadow-sm">R</kbd></div>
                         <div className="flex items-center justify-between"><span className="text-slate-400">자동 분석</span><kbd className="bg-white border rounded px-1 min-w-[18px] text-center shadow-sm">Q</kbd></div>
+                        <div className="flex items-center justify-between"><span className="text-slate-400">층 순환</span><kbd className="bg-white border rounded px-1 min-w-[18px] text-center shadow-sm">Tab</kbd></div>
                         <div className="flex items-center justify-between"><span className="text-slate-400">삭제</span><kbd className="bg-white border rounded px-1 min-w-[18px] text-center shadow-sm">Del</kbd></div>
                     </div>
                 </div>
