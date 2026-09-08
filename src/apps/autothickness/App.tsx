@@ -7,6 +7,7 @@ import { CalibrationManager } from './services/CalibrationManager';
 import { Measurement } from './services/Measurement';
 import { AutoAnalyzer } from './services/AutoAnalyzer';
 import { MicrostructureAnalyzer } from './services/MicrostructureAnalyzer';
+import { analyzeOMLayers, OM_LAYER_ORDER, reportOMLayers, formatOMLayer, omResultToMeasurementData } from './services/OMLayerAnalyzer';
 import { ProfileChartManager } from './services/ProfileChartManager';
 import { DebugOverlay } from './components/DebugOverlay';
 import CalibrationDialog from './components/CalibrationDialog';
@@ -114,6 +115,8 @@ const App: React.FC<AppProps> = ({ onBack }) => {
     const [roughnessOrientation, setRoughnessOrientation] = useState<'horizontal' | 'vertical'>('vertical');
     const [correctionMode, setCorrectionMode] = useState<'merge' | 'split' | 'reassign' | null>(null);
     const [calibrationDialogPixels, setCalibrationDialogPixels] = useState<number | null>(null);
+    const [omRejectOutliers, setOmRejectOutliers] = useState(true);
+    const [omBatchProgress, setOmBatchProgress] = useState<{ current: number; total: number; name: string; ok: number; fail: number } | null>(null);
 
     // Ref to track selected measurement for hover callback (avoids stale closure)
     const selectedMeasurementRef = useRef<Measurement | null>(null);
@@ -282,18 +285,6 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                 case 's': setTool(prev => prev === 'area-profile' ? null : 'area-profile'); break;
                 case 'p': setTool(prev => prev === 'parallel' ? null : 'parallel'); break;
                 case 'c': setTool(prev => prev === 'calibration' ? null : 'calibration'); break;
-                case 'a': // 'A' shortcut can be removed or left as is if we want to support it for auto-analysis
-                    if (canvasHandleRef.current) {
-                        canvasHandleRef.current.autoMeasure();
-                        addToast('자동 분석', '자동 두께 분석을 실행했습니다.', 'success');
-                    }
-                    break;
-                case 'q': // Auto analysis shortcut if ROI exists
-                    if (canvasHandleRef.current) {
-                        canvasHandleRef.current.autoMeasure();
-                        addToast('자동 분석', '자동 두께 분석을 실행했습니다.', 'success');
-                    }
-                    break;
                 case 'd':
                     if (canvasHandleRef.current) {
                         canvasHandleRef.current.toggleEdgeView();
@@ -920,21 +911,24 @@ const App: React.FC<AppProps> = ({ onBack }) => {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [roughnessOrientation, imageManager, calibrationManager, addToast, handleSelectMeasurement, handleUpdateMeasurement]);
 
+    const applyMeasurements = (next: Measurement[]) => {
+        setMeasurements(next);
+        if (currentImageIndex >= 0) {
+            setImageList(prev => prev.map((e, i) => i === currentImageIndex ? { ...e, measurements: next } : e));
+        }
+    };
+
     const handleDeleteMeasurement = useCallback((index: number) => {
         pushUndo();
-        setMeasurements(prev => {
-            const next = [...prev];
-            next.splice(index, 1);
-            return next;
-        });
+        applyMeasurements(measurements.filter((_, i) => i !== index));
         setSelectedMeasurement(null);
-        addToast('삭제', '측정값을 삭제했습니다.', 'info');
-    }, [pushUndo]);
+        addToast('삭제', '측정값을 삭제했습니다. 다시 자동측정할 수 있습니다.', 'info');
+    }, [pushUndo, currentImageIndex, measurements]);
 
     const handleClearAll = () => {
         if (confirm('모든 측정값을 삭제하시겠습니까?')) {
             pushUndo();
-            setMeasurements([]);
+            applyMeasurements([]);
             setSelectedMeasurement(null);
             addToast('초기화', '모든 측정값이 초기화되었습니다.', 'warning');
         }
@@ -949,12 +943,125 @@ const App: React.FC<AppProps> = ({ onBack }) => {
         }
     }, [chartManager, calibrationManager.unit, appMode]);
 
-    // Auto Analysis
-    const handleAutoAnalyze = async () => {
-        if (canvasHandleRef.current) {
-            // Force auto measure on full image
-            canvasHandleRef.current.autoMeasure();
-            addToast('자동 분석', '전체 이미지에 대한 자동 두께 분석을 시작합니다.', 'success');
+    const handleOMAutoAnalyze = () => {
+        if (!canvasHandleRef.current) return;
+        const res = canvasHandleRef.current.omAutoMeasure(omRejectOutliers);
+        if (!res) {
+            addToast('OM 층 자동측정', '이미지를 먼저 불러오세요.', 'error');
+            return;
+        }
+        if (!res.ok) {
+            addToast('OM 층 자동측정 실패', res.reason || '층 구조를 인식하지 못했습니다.', 'error');
+            return;
+        }
+        const ppu = calibrationManager.pixelsPerUnit || 1;
+        const rep = reportOMLayers(res, px => px / ppu);
+        const txt = OM_LAYER_ORDER.map(L => formatOMLayer(L, rep[L], calibrationManager.unit, false)).join(' / ');
+        const tail = res.flags.length ? ` ★${res.flags.join('; ')}` : '';
+        addToast(res.ambiguous ? '★ OM 층 자동측정 (판정 애매)' : 'OM 층 자동측정 완료', `${txt} (slab ${res.nSlabs}/${res.nSampled})${tail}`, res.ambiguous ? 'info' : 'success');
+    };
+
+    const decodeFileToImageData = async (file: File): Promise<ImageData | null> => {
+        const lower = file.name.toLowerCase();
+        let url: string;
+        if (lower.endsWith('.tif') || lower.endsWith('.tiff')) {
+            const arrayBuffer = await file.arrayBuffer();
+            const UTIF = await import('utif2');
+            const ifds = UTIF.decode(arrayBuffer);
+            if (ifds.length === 0) return null;
+            UTIF.decodeImage(arrayBuffer, ifds[0]);
+            const rgba = UTIF.toRGBA8(ifds[0]);
+            const c = document.createElement('canvas');
+            c.width = ifds[0].width; c.height = ifds[0].height;
+            const cx = c.getContext('2d');
+            if (!cx) return null;
+            const d = cx.createImageData(c.width, c.height);
+            d.data.set(new Uint8ClampedArray(rgba.buffer));
+            cx.putImageData(d, 0, 0);
+            url = c.toDataURL('image/png');
+        } else {
+            url = URL.createObjectURL(file);
+        }
+        const img = new Image();
+        await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = url; });
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width; canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.drawImage(img, 0, 0);
+        const data = ctx.getImageData(0, 0, img.width, img.height);
+        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+        return data;
+    };
+
+    const handleOMBatchAnalyze = async () => {
+        if (imageList.length === 0) return;
+        const ppu = calibrationManager.pixelsPerUnit;
+        if (!ppu) {
+            addToast('OM 일괄 자동측정 실패', '캘리브레이션 정보가 없습니다.', 'error');
+            return;
+        }
+        const newList = [...imageList];
+        const rows: string[] = [];
+        let ok = 0, fail = 0;
+        setOmBatchProgress({ current: 0, total: newList.length, name: '준비 중...', ok: 0, fail: 0 });
+
+        try {
+            for (let i = 0; i < newList.length; i++) {
+                const entry = newList[i];
+                const nameWithoutExt = entry.name.replace(/\.[^/.]+$/, '');
+                setOmBatchProgress({ current: i + 1, total: newList.length, name: entry.name, ok, fail });
+                await new Promise(r => setTimeout(r, 0));
+                try {
+                    const imageData = await decodeFileToImageData(entry.file);
+                    if (!imageData) { fail++; continue; }
+                    const res = analyzeOMLayers(imageData, { rejectOutliersOn: omRejectOutliers });
+                    const data = omResultToMeasurementData(res, px => px / ppu);
+                    const unit = calibrationManager.unit;
+                    const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
+
+                    if (res.ok) {
+                        for (const L of OM_LAYER_ORDER) {
+                            const r = data.layers[L];
+                            const judge = r.status === 'absent' ? '없음' : r.ambiguous ? '★애매' : '정상';
+                            const note = [...r.flags, ...res.flags].join('; ');
+                            rows.push(r.value === null
+                                ? `${nameWithoutExt},${L},,,,${unit},${judge},${res.nSlabs},${q(note)}`
+                                : `${nameWithoutExt},${L},${r.value.toFixed(4)},${(r.p25 as number).toFixed(4)},${(r.p75 as number).toFixed(4)},${unit},${judge},${res.nSlabs},${q(note)}`);
+                        }
+                        ok++;
+                    } else {
+                        rows.push(`${nameWithoutExt},FAIL,,,,${unit},실패,${res.nSlabs},${q(res.reason || '')}`);
+                        fail++;
+                    }
+
+                    const meas = new Measurement('om-layers', data);
+                    const existing = i === currentImageIndex ? measurements : entry.measurements;
+                    entry.measurements = [...existing.filter(m => m.type !== 'om-layers'), meas];
+                } catch (e) {
+                    console.error('OM batch fail for', entry.name, e);
+                    fail++;
+                }
+                setOmBatchProgress({ current: i + 1, total: newList.length, name: entry.name, ok, fail });
+            }
+
+            setImageList(newList);
+            if (currentImageIndex !== -1) {
+                setMeasurements([...newList[currentImageIndex].measurements]);
+            }
+
+            if (rows.length > 0) {
+                let csv = '\uFEFF파일명,층종류,자동두께,IQR하한,IQR상한,단위,판정,유효slab,비고\n';
+                csv += rows.join('\n');
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `om_auto_measurements_${new Date().toISOString().slice(0, 10)}.csv`;
+                link.click();
+            }
+            addToast('OM 일괄 자동측정 완료', `성공 ${ok} / 실패 ${fail} — CSV를 다운로드했습니다.`, ok > 0 ? 'success' : 'error');
+        } finally {
+            setOmBatchProgress(null);
         }
     };
 
@@ -1266,7 +1373,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                     <div className="flex items-center gap-2 select-none">
                         <Ruler className="text-blue-600" size={18} />
                         <h1 className="text-sm font-bold text-slate-900 tracking-wide">
-                            Image Analyzer <span className="text-slate-400 font-normal ml-1">v1.0</span>
+                            Image Analyzer <span className="text-slate-400 font-normal ml-1">v2.0.0</span>
                         </h1>
                         {onBack && (
                             <button onClick={onBack} className="ml-2 text-slate-400 hover:text-slate-900 transition-colors bg-slate-100 hover:bg-slate-200 p-1 rounded-full" title="홈으로 이동">
@@ -1342,7 +1449,11 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                         onAlStartThresholdChange={setAlStartThreshold}
                         onAlEndThresholdChange={setAlEndThreshold}
                         calibrationVersion={calibrationVersion}
-                        onAutoAnalyze={handleAutoAnalyze}
+                        onOMAutoAnalyze={handleOMAutoAnalyze}
+                        onOMBatchAnalyze={handleOMBatchAnalyze}
+                        omRejectOutliers={omRejectOutliers}
+                        onOmRejectOutliersChange={setOmRejectOutliers}
+                        omBatchBusy={!!omBatchProgress}
                         onCalibrationChange={handleCalibrationChange}
                         appMode={appMode}
                         onAppModeChange={setAppMode}
@@ -1423,6 +1534,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                                     }
                                 }}
                                 onCalibrationLine={(pixels) => setCalibrationDialogPixels(pixels)}
+                                omRejectOutliers={omRejectOutliers}
                             />
                         )}
                     </div>
@@ -1512,6 +1624,27 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                 <div>© 2026 Korloy CVD Development Team.</div>
                 <div className="font-medium">Copyright Shin HyeonTae. All rights reserved.</div>
             </footer>
+
+            {omBatchProgress && (
+                <div className="fixed inset-0 z-[200] bg-slate-900/55 backdrop-blur-[2px] flex items-center justify-center">
+                    <div className="bg-white rounded-xl shadow-2xl border border-purple-200 w-[min(420px,92vw)] p-5">
+                        <div className="text-[13px] font-bold text-purple-700 mb-1">OM 일괄 자동측정 중</div>
+                        <div className="text-[12px] text-slate-600 truncate mb-3" title={omBatchProgress.name}>
+                            {omBatchProgress.current}/{omBatchProgress.total} · {omBatchProgress.name}
+                        </div>
+                        <div className="h-2 bg-slate-100 rounded-full overflow-hidden mb-2">
+                            <div
+                                className="h-full bg-purple-600 transition-all"
+                                style={{ width: `${omBatchProgress.total ? (100 * omBatchProgress.current / omBatchProgress.total) : 0}%` }}
+                            />
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                            성공 {omBatchProgress.ok} · 실패 {omBatchProgress.fail}
+                            {omBatchProgress.current < omBatchProgress.total ? ' · 측정 진행 중…' : ' · 마무리 중…'}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Toast Container */}
             <div style={{

@@ -35,7 +35,7 @@ git push origin main
 > 또한 `Where-Object` 파이프라인 대신 **`foreach` 루프**를 사용해야 필터가 정상 동작함.
 
 ```powershell
-$root = "c:\Users\korloy\OneDrive - 다인그룹\바탕 화면\자동화 프로그램\AutoCalulator v1.0.0"
+$root = "c:\Users\korloy\OneDrive - 다인그룹\바탕 화면\자동화 프로그램\AutoCalculator v2.0.0"
 $ver = "v1.0.X"
 $tmpDir = "c:\Users\korloy\AppData\Local\Temp\ac_build_tmp"
 $zipPath = "c:\Users\korloy\AppData\Local\Temp\AutoCalculator-$ver.zip"

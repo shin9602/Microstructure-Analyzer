@@ -5,6 +5,14 @@
 
 import type { ImageManager } from './ImageManager';
 import type { CalibrationManager } from './CalibrationManager';
+import { OM_LAYER_ORDER, formatOMLayer, type OMLayerName, type OMLayerReport } from './OMLayerAnalyzer';
+
+/** OM 층 자동측정 오버레이 색 */
+export const OM_LAYER_COLORS: Record<string, string> = {
+    Al2O3: '#a855f7',
+    Bonding: '#f59e0b',
+    TiCN: '#22c55e',
+};
 
 export class Measurement {
     id: number;
@@ -41,6 +49,8 @@ export class Measurement {
 
         if (this.type === 'line' || this.type === 'auto' || this.type === 'parallel') {
             this.drawLine(ctx, imageManager, calibrationManager);
+        } else if (this.type === 'om-layers') {
+            this.drawOMLayers(ctx, imageManager, calibrationManager);
         } else if (this.type === 'profile') {
             if (this.data.roi) {
                 // Roughness profile: keep specific style but respect selection
@@ -220,11 +230,89 @@ export class Measurement {
         this.drawLabel(ctx, imageManager, midX, midY - 10 / imageManager.scale, label);
     }
 
-    drawLabel(ctx: CanvasRenderingContext2D, imageManager: ImageManager, x: number, y: number, text: string, align: 'center' | 'left' | 'right' = 'center') {
+    drawOMLayers(ctx: CanvasRenderingContext2D, imageManager: ImageManager, calibrationManager: CalibrationManager) {
+        type Pt = { x: number; y: number };
+        const lines = this.data.lines as Record<OMLayerName, { top: Pt[]; bottom: Pt[] }> | undefined;
+        const layers = this.data.layers as Record<OMLayerName, OMLayerReport> | undefined;
+        if (!lines || !layers) return;
+        const unit = calibrationManager.unit;
+        const bands = OM_LAYER_ORDER
+            .filter(L => layers[L]?.status === 'present' && lines[L]?.top?.length >= 2)
+            .map(L => ({ key: L, upper: lines[L].top, lower: lines[L].bottom, color: OM_LAYER_COLORS[L] }));
+        if (bands.length === 0) return;
+
+        ctx.save();
+        ctx.setLineDash([]);
+        for (const b of bands) {
+            ctx.beginPath();
+            ctx.moveTo(b.upper[0].x, b.upper[0].y);
+            for (let i = 1; i < b.upper.length; i++) ctx.lineTo(b.upper[i].x, b.upper[i].y);
+            for (let i = b.lower.length - 1; i >= 0; i--) ctx.lineTo(b.lower[i].x, b.lower[i].y);
+            ctx.closePath();
+            ctx.globalAlpha = this.selected ? 0.32 : 0.22;
+            ctx.fillStyle = b.color;
+            ctx.fill();
+        }
+        ctx.globalAlpha = 0.95;
+        ctx.lineWidth = 2 / imageManager.scale;
+        const strokePoly = (pts: Pt[], color: string, dashed: boolean) => {
+            if (pts.length < 2) return;
+            ctx.setLineDash(dashed ? [8 / imageManager.scale, 6 / imageManager.scale] : []);
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x, pts[0].y);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+            ctx.strokeStyle = color;
+            ctx.stroke();
+        };
+        for (const b of bands) {
+            const amb = !!layers[b.key]?.ambiguous;
+            strokePoly(b.upper, '#ffffff', amb);
+            strokePoly(b.lower, b.color, amb);
+        }
+        ctx.restore();
+
+        const ref = bands[0];
+        const first = ref.upper[0], last = ref.upper[ref.upper.length - 1];
+        const horizontal = Math.abs(last.x - first.x) >= Math.abs(last.y - first.y);
+        const lineH = 22;
+        OM_LAYER_ORDER.forEach((L, bi) => {
+            const band = bands.find(b => b.key === L);
+            const report = layers[L];
+            if (!report) return;
+            const text = formatOMLayer(L, report, unit);
+            const anchor = band ?? ref;
+            const i1 = anchor.upper.length - 1;
+            const it = {
+                text, color: band ? band.color : '#94a3b8', absent: !band,
+                p0: { x: (anchor.upper[0].x + anchor.lower[0].x) / 2, y: (anchor.upper[0].y + anchor.lower[0].y) / 2 },
+                p1: { x: (anchor.upper[i1].x + anchor.lower[i1].x) / 2, y: (anchor.upper[i1].y + anchor.lower[i1].y) / 2 },
+            };
+            if (horizontal) {
+                const leftFirst = it.p0.x <= it.p1.x;
+                const off = it.absent ? { dx: 0, dy: lineH * (bi + 1) } : undefined;
+                this.drawLabel(ctx, imageManager, it.p0.x, it.p0.y, it.text, leftFirst ? 'left' : 'right', it.color, off);
+                this.drawLabel(ctx, imageManager, it.p1.x, it.p1.y, it.text, leftFirst ? 'right' : 'left', it.color, off);
+            } else {
+                const topFirst = it.p0.y <= it.p1.y;
+                const stackTop = { dx: 0, dy: lineH * (bi + 1) };
+                const stackBottom = { dx: 0, dy: -lineH * (OM_LAYER_ORDER.length - bi) };
+                this.drawLabel(ctx, imageManager, it.p0.x, it.p0.y, it.text, 'center', it.color, topFirst ? stackTop : stackBottom);
+                this.drawLabel(ctx, imageManager, it.p1.x, it.p1.y, it.text, 'center', it.color, topFirst ? stackBottom : stackTop);
+            }
+        });
+        const flags = (this.data.flags || []) as string[];
+        if (flags.length) {
+            const mid = Math.floor(ref.upper.length / 2);
+            this.drawLabel(ctx, imageManager, ref.upper[mid].x, ref.upper[mid].y, `★ ${flags.join('; ')}`, 'center', '#f59e0b', { dx: 0, dy: -lineH });
+        }
+    }
+
+    drawLabel(ctx: CanvasRenderingContext2D, imageManager: ImageManager, x: number, y: number, text: string, align: 'center' | 'left' | 'right' = 'center', accent?: string, screenOffset?: { dx: number; dy: number }) {
         ctx.save();
         ctx.resetTransform();
 
         const screenPos = imageManager.imageToScreen(x, y);
+        if (screenOffset) { screenPos.x += screenOffset.dx; screenPos.y += screenOffset.dy; }
 
         ctx.font = '12px Inter, sans-serif';
         ctx.textAlign = align;
@@ -247,6 +335,10 @@ export class Measurement {
             metrics.width + paddingH * 2,
             height + paddingV * 2
         );
+        if (accent) {
+            ctx.fillStyle = accent;
+            ctx.fillRect(rectX, screenPos.y - height / 2 - paddingV, 3, height + paddingV * 2);
+        }
 
         ctx.fillStyle = '#ffffff';
         ctx.fillText(text, screenPos.x, screenPos.y);
@@ -268,6 +360,7 @@ export class Measurement {
             case 'profile': return themeBlue;
             case 'area-profile': return themeBlue;
             case 'microstructure': return '#4f46e5';
+            case 'om-layers': return '#a855f7';
             default: return themeBlue;
         }
     }
@@ -281,7 +374,8 @@ export class Measurement {
             'parallel': '평행선 거리',
             'profile': '조도 분석',
             'area-profile': '두께 자동분석',
-            'microstructure': 'SEM 미세구조 분석'
+            'microstructure': 'SEM 미세구조 분석',
+            'om-layers': 'OM 층 자동측정'
         };
         return typeNames[this.type] || '알 수 없음';
     }
@@ -322,6 +416,13 @@ export class Measurement {
             return parts.slice(0, 3).join(', ') + (parts.length > 3 ? '...' : '');
         } else if (this.type === 'microstructure') {
             return `${this.data.grainCount || 0} grains, ${(this.data.wcFraction * 100).toFixed(1)}% WC`;
+        } else if (this.type === 'om-layers') {
+            const layers = this.data.layers as Record<OMLayerName, OMLayerReport> | undefined;
+            if (!this.data.ok || !layers) return '검출 실패';
+            const star = this.data.ambiguous ? '★ ' : '';
+            return star + OM_LAYER_ORDER
+                .map(L => layers[L]?.status === 'absent' ? `${L} 없음` : `${(layers[L]?.ambiguous ? '★' : '')}${L} ${(layers[L]?.value as number)?.toFixed(2) ?? '-'}`)
+                .join(' | ');
         }
         return '-';
     }
@@ -352,6 +453,8 @@ export class Measurement {
         } else if (this.type === 'area-profile') {
             const count = Object.keys(this.data.results || {}).length;
             return `${count}개 층 분석됨`;
+        } else if (this.type === 'om-layers') {
+            return `${this.data.nSlabs || 0} slab`;
         }
         return '';
     }
@@ -373,6 +476,17 @@ export class Measurement {
                 const dist = this.pointToLineDistance(x, y, x1, y1, x2, y2);
                 return dist < threshold;
             }
+        } else if (this.type === 'om-layers') {
+            const lines = this.data.lines as Record<OMLayerName, { top: { x: number; y: number }[]; bottom: { x: number; y: number }[] }> | undefined;
+            if (!lines) return false;
+            const pts = OM_LAYER_ORDER.flatMap(L => [...(lines[L]?.top || []), ...(lines[L]?.bottom || [])]);
+            if (pts.length === 0) return false;
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const p of pts) {
+                if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+                if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+            }
+            return x >= minX && x <= maxX && y >= minY && y <= maxY;
         } else if (this.type === 'rectangle' || this.type === 'color-segment' || this.type === 'area-profile' || this.type === 'microstructure') {
             const rectData = this.type === 'area-profile' ? this.data.roi : this.data;
             if (!rectData) return false;

@@ -5,6 +5,7 @@ import { Measurement } from '../services/Measurement';
 import { AutoAnalyzer } from '../services/AutoAnalyzer';
 import { EdgeDetector } from '../services/EdgeDetector';
 import { MicrostructureAnalyzer } from '../services/MicrostructureAnalyzer';
+import { analyzeOMLayers, omResultToMeasurementData, type OMLayerResult } from '../services/OMLayerAnalyzer';
 
 export interface CanvasAreaProps {
     imageManager: ImageManager;
@@ -28,11 +29,13 @@ export interface CanvasAreaProps {
     correctionMode?: 'merge' | 'split' | 'reassign' | null;
     onManualCorrection?: (updates: any) => void;
     onCalibrationLine?: (pixelLength: number) => void;
+    omRejectOutliers?: boolean;
 }
 
 export interface CanvasAreaHandle {
     fitToCanvas: () => void;
     autoMeasure: () => void;
+    omAutoMeasure: (rejectOutliersOn?: boolean) => OMLayerResult | null;
     toggleEdgeView: () => void;
     zoomIn: () => void;
     zoomOut: () => void;
@@ -45,6 +48,7 @@ const CanvasArea = forwardRef<CanvasAreaHandle, CanvasAreaProps>((props, ref) =>
         imageManager, calibrationManager, measurements, setMeasurements,
         currentTool, setTool, onSelectionChange, analysisMode,
         onProfileUpdate, onRoughnessProfileUpdate, alStartThreshold, alEndThreshold,
+        omRejectOutliers = true,
         imageVersion, microPhaseMode, lineLayerType, correctionMode, onManualCorrection, onCalibrationLine
     } = props;
 
@@ -300,6 +304,17 @@ const CanvasArea = forwardRef<CanvasAreaHandle, CanvasAreaProps>((props, ref) =>
         }
         redraw();
     }, [imageManager, calibrationManager, setMeasurements, redraw, onProfileUpdate, alStartThreshold, alEndThreshold, onSelectionChange]);
+
+    const performOMAutoMeasure = useCallback((rejectOn?: boolean): OMLayerResult | null => {
+        const imageData = imageManager.getImageData();
+        if (!imageData) return null;
+        const res = analyzeOMLayers(imageData, { rejectOutliersOn: rejectOn ?? omRejectOutliers });
+        const meas = new Measurement('om-layers', omResultToMeasurementData(res, px => calibrationManager.pixelsToReal(px) ?? px));
+        setMeasurements(prev => [...prev.filter(m => m.type !== 'om-layers'), meas]);
+        if (onSelectionChange) onSelectionChange(meas);
+        redraw();
+        return res;
+    }, [imageManager, calibrationManager, setMeasurements, redraw, onSelectionChange, omRejectOutliers]);
 
     // Perform Roughness Analysis on a given ROI
     const performRoughnessOnROI = useCallback((roi: { x: number, y: number, width: number, height: number }, orientation: 'horizontal' | 'vertical') => {
@@ -653,11 +668,11 @@ const CanvasArea = forwardRef<CanvasAreaHandle, CanvasAreaProps>((props, ref) =>
 
     useImperativeHandle(ref, () => ({
         fitToCanvas: () => { fitToCanvas(); props.onZoomChange?.(); },
-        redraw, autoMeasure: performAutoMeasure, toggleEdgeView,
+        redraw, autoMeasure: performAutoMeasure, omAutoMeasure: performOMAutoMeasure, toggleEdgeView,
         zoomIn: () => { imageManager.zoomIn(); redraw(); props.onZoomChange?.(); },
         zoomOut: () => { imageManager.zoomOut(); redraw(); props.onZoomChange?.(); },
         zoom100: () => { imageManager.fitToCanvas(); redraw(); props.onZoomChange?.(); }
-    }), [fitToCanvas, redraw, performAutoMeasure, toggleEdgeView, imageManager, props.onZoomChange]);
+    }), [fitToCanvas, redraw, performAutoMeasure, performOMAutoMeasure, toggleEdgeView, imageManager, props.onZoomChange]);
 
     return (
         <div ref={containerRef} className="w-full h-full relative overflow-hidden bg-slate-50 select-none">

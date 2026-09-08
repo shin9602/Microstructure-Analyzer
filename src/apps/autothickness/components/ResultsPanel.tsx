@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Measurement } from '../services/Measurement';
+import { Measurement, OM_LAYER_COLORS } from '../services/Measurement';
+import { OM_LAYER_ORDER, OM_LAYER_LABEL, type OMLayerReport } from '../services/OMLayerAnalyzer';
 import { CalibrationManager } from '../services/CalibrationManager';
 import { Layers, Download, CheckCircle2, Activity, X, Settings, Info, TrendingUp } from 'lucide-react';
 import { LINE_LAYER_TYPES } from '../constants';
@@ -62,7 +63,8 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
             'color-segment': '색상 영역',
             'parallel': '평행선',
             'area-profile': '두께 분석',
-            'microstructure': 'SEM 미세구조'
+            'microstructure': 'SEM 미세구조',
+            'om-layers': 'OM 층 자동측정'
         };
         return labels[type] || type;
     };
@@ -76,12 +78,14 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
             'parallel': '#06b6d4',
             'profile': '#3b82f6',
             'area-profile': '#f59e0b',
-            'microstructure': '#4f46e5'
+            'microstructure': '#4f46e5',
+            'om-layers': '#a855f7'
         };
         return colors[type] || '#94a3b8';
     };
 
     // Get area-profile details for selected measurement
+    const selectedOM = selectedMeasurement?.type === 'om-layers' ? selectedMeasurement.data : null;
     const selectedAreaDetails = selectedMeasurement?.type === 'area-profile' && selectedMeasurement.data?.results
         ? selectedMeasurement.data.results
         : null;
@@ -162,6 +166,53 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
                             </button>
                         ))}
                     </div>
+                </div>
+            )}
+
+            {selectedOM && (
+                <div className={`rounded-md p-2 mb-2 border ${selectedOM.ambiguous ? 'bg-amber-50 border-amber-200' : 'bg-purple-50 border-purple-100'}`}>
+                    <div className="text-[11px] font-bold text-purple-600 mb-1.5 flex items-center gap-1">
+                        <Layers size={12} /> OM 층 자동측정
+                        <span className="ml-auto font-normal text-[9px] text-slate-400">slab {selectedOM.nSlabs}/{selectedOM.nSampled ?? '-'} · 이상치 {selectedOM.rejectOutliersOn === false ? 'OFF' : 'ON'}</span>
+                    </div>
+                    {!selectedOM.ok ? (
+                        <div className="text-[11px] text-red-500">검출 실패 — {selectedOM.reason || '층 구조 인식 불가'}</div>
+                    ) : (
+                        <>
+                            {OM_LAYER_ORDER.map(L => {
+                                const r = selectedOM.layers?.[L] as OMLayerReport | undefined;
+                                if (!r) return null;
+                                const absent = r.status === 'absent';
+                                return (
+                                    <div key={L} className={`py-0.5 text-[11px] ${absent ? 'text-slate-400' : 'text-slate-700'}`}>
+                                        <div className="flex justify-between items-center">
+                                            <span className="flex items-center gap-1">
+                                                <span className="inline-block w-2 h-2 rounded-sm" style={{ background: OM_LAYER_COLORS[L] }} />
+                                                {r.ambiguous && <span className="text-amber-500 font-bold">★</span>}
+                                                {OM_LAYER_LABEL[L]}
+                                            </span>
+                                            <span className="font-mono">
+                                                {absent ? '없음' : `${(r.value as number).toFixed(2)} ${calibrationManager.unit}`}
+                                                {!absent && r.p25 !== null && r.p75 !== null && (
+                                                    <span className="text-slate-400 ml-1">({r.p25.toFixed(2)}~{r.p75.toFixed(2)})</span>
+                                                )}
+                                            </span>
+                                        </div>
+                                        {r.flags?.length > 0 && (
+                                            <div className="text-[10px] text-amber-600 pl-3">★ {r.flags.join(' · ')}</div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                            {Array.isArray(selectedOM.flags) && selectedOM.flags.length > 0 && (
+                                <div className="text-[10px] text-amber-600 mt-1">★ 전체: {selectedOM.flags.join(' · ')}</div>
+                            )}
+                            <div className="border-t border-slate-200 mt-1 pt-1 flex justify-between text-[11px] font-bold text-blue-600">
+                                <span>Total (있는 층 합)</span>
+                                <span>{OM_LAYER_ORDER.reduce((s, L) => s + ((selectedOM.layers?.[L] as OMLayerReport | undefined)?.value ?? 0), 0).toFixed(2)} {calibrationManager.unit}</span>
+                            </div>
+                        </>
+                    )}
                 </div>
             )}
 

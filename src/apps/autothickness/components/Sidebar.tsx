@@ -30,7 +30,11 @@ interface SidebarProps {
     onAlStartThresholdChange: (v: number) => void;
     onAlEndThresholdChange: (v: number) => void;
     calibrationVersion: number;
-    onAutoAnalyze: () => void;
+    onOMAutoAnalyze: () => void;
+    onOMBatchAnalyze: () => void;
+    omRejectOutliers: boolean;
+    onOmRejectOutliersChange: (on: boolean) => void;
+    omBatchBusy?: boolean;
     onCalibrationChange: () => void;
     appMode: 'om' | 'sem';
     onAppModeChange: (mode: 'om' | 'sem') => void;
@@ -50,7 +54,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onCalibrationFileLoad,
     onUndoClick, onRedoClick,
     alStartThreshold, alEndThreshold, onAlStartThresholdChange, onAlEndThresholdChange,
-    calibrationVersion, onAutoAnalyze, onCalibrationChange,
+    calibrationVersion, onOMAutoAnalyze, onOMBatchAnalyze,
+    omRejectOutliers, onOmRejectOutliersChange, omBatchBusy, onCalibrationChange,
     appMode, onAppModeChange,
     imageManager,
     onImageManagerChange,
@@ -255,14 +260,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
                             <div className="my-2 border-t border-slate-200"></div>
 
-                            {/* Parallel tool removed as requested */}
+                            <div className="bg-purple-50 border border-purple-200 rounded-lg p-2.5 space-y-2">
+                                <p className="text-[10px] font-bold text-purple-700 flex items-center gap-1.5">
+                                    <Layers size={12} /> OM 층 자동측정 (Al₂O₃ / Bonding / TiCN)
+                                </p>
+                                <button
+                                    className="btn-primary bg-purple-600 hover:bg-purple-700 border-none py-2 px-4 rounded-lg flex items-center justify-center gap-2 w-full text-white shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                    onClick={onOMAutoAnalyze}
+                                    disabled={omBatchBusy}
+                                >
+                                    <MousePointer2 size={16} /> 현재 이미지 자동측정
+                                </button>
+                                <button
+                                    className="btn-primary bg-purple-500 hover:bg-purple-600 border-none py-2 px-4 rounded-lg flex items-center justify-center gap-2 w-full text-white shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                    onClick={onOMBatchAnalyze}
+                                    disabled={omBatchBusy}
+                                >
+                                    <Download size={16} /> {omBatchBusy ? '일괄 측정 중…' : '전체 일괄 자동측정 + CSV'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => onOmRejectOutliersChange(!omRejectOutliers)}
+                                    className={`w-full py-1.5 px-2 rounded-md text-[11px] font-bold border flex items-center justify-between ${omRejectOutliers ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-slate-500 border-slate-200'}`}
+                                    title="모드만 바꿈. 자동측정 버튼을 눌러야 적용됩니다."
+                                >
+                                    <span>이상치 제거</span>
+                                    <span>{omRejectOutliers ? 'ON' : 'OFF'}</span>
+                                </button>
+                            </div>
 
-                            <button
-                                className="btn-primary bg-indigo-600 hover:bg-indigo-700 border-none py-2 px-4 rounded-lg flex items-center justify-center gap-2 w-full text-white shadow-sm"
-                                onClick={onAutoAnalyze}
-                            >
-                                <MousePointer2 size={16} /> 두께 자동분석
-                            </button>
+                            <div className="my-2 border-t border-slate-200"></div>
 
                             <button
                                 className="btn-primary bg-emerald-600 hover:bg-emerald-700 border-none py-2 px-4 rounded-lg flex items-center justify-center gap-2 w-full text-white shadow-sm"
