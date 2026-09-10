@@ -27,6 +27,8 @@ del "%TEMP%\acver.txt" >nul 2>&1
 
 if "!LATEST_VER!"=="" goto SKIP_UPDATE
 if "!CURRENT_VER!"=="!LATEST_VER!" (echo  Already latest version. ^(%CURRENT_VER%^) & goto SKIP_UPDATE)
+powershell -NoProfile -NonInteractive -Command "$installed=$null;$available=$null;if(-not [version]::TryParse($env:CURRENT_VER.TrimStart([char[]]'vV'),[ref]$installed)){exit 1};if(-not [version]::TryParse($env:LATEST_VER.TrimStart([char[]]'vV'),[ref]$available)){exit 1};if($available -le $installed){exit 1};exit 0"
+if errorlevel 1 (echo  Update skipped: installed version is newer or version check failed. & goto SKIP_UPDATE)
 echo  New version: !LATEST_VER!
 set /p DO_UPDATE=  Update now? [Y/N]:
 if /i not "!DO_UPDATE!"=="Y" goto SKIP_UPDATE

@@ -6,19 +6,8 @@
  *
  * 각 층은 있을 수도, 없을 수도 있다 (TiCN 단층, Al2O3 없음, Bonding 없음 등).
  *
- * 알고리즘 (analysis/om_segment.py 와 동일, U30PT1 96장 + MT-TiCN 단층 16장 수동 측정으로 검증):
- *   1. 수지가 위로 오도록 방향 정규화 (파랑·청록 픽셀이 가장 많은 가장자리)
- *   2. 31px 폭 slab 단위로 행별 중앙값 RGB 프로파일 계산
- *   3. 위→아래 순서로 층 검출 (각 단계는 "없음"으로 끝날 수 있음)
- *        resin_end : 수지 이후 비수지 20px 연속
- *        Al2O3     : 구간 최소 밝기 < 60 이면 존재. 핵(최소+15 이하 25px 연속) → 위로 올라가 밝기 60 초과 지점 = 시작,
- *                    아래로 밝기 128 초과 30px 연속 = 끝
- *        Bonding   : Al2O3 끝 직후 R-B 피크 ≥ 25 이면 존재. 따뜻함이 꺼진 5px 연속 = 끝 (피크 < 35 → 약함)
- *        TiCN      : 상부 밝기 vs 깊은 모재 밝기 대비 ≥ 8 이면 존재. 65% 지점 20px 연속 초과 = 모재 시작 (대비 < 25 → 약함)
- *   4. 이상치 slab 삭제: |y-이웃중앙값|>40px 또는 |y-전역중앙값|>120px 이면 그 층 span 제거 (스무딩 없음)
- *   5. 표시 경계는 남은 점의 중앙값 y로 선분 1개 (상·하 각 2점)
- *   6. slab별 두께의 중앙값을 대표값, IQR(25~75%)을 산포로 보고
- *   7. 판정 애매(★): 층 검출 slab 비율 20~80% / IQR/median > 0.35 / 약한 신호 slab > 50% / 유효 slab < 40%
+ * 알고리즘 (Python 프로토타입에 수지 확장·신뢰도 차단 추가):
+ *   파랑·청록·초록 수지를 검출하고, 애매한 경계는 ★로 표시하고, 심각한 검출 실패만 수치를 반환하지 않는다.
  *
  * 순수 함수 모듈 — React/DOM 의존 없음 (AutoCalculator 이식 시 그대로 복사)
  */
@@ -29,6 +18,7 @@ export interface OMLayerParams {
     xMargin: number;       // 좌우 제외 비율
     resinBlue: number;     // 수지: B - R > 값 (청록 수지는 G≈B)
     resinB: number;        // 수지: B > 값
+    resinGreenSlack: number; // 파랑·청록 분기의 G-B 허용 범위 (초록은 별도 검출)
     resinMinPx: number;    // 위에 수지가 최소 이만큼
     resinGapRun: number;   // 비수지 연속 → 수지 끝
     coreMargin: number;    // Al2O3 핵 임계 = 최소 밝기 + margin
@@ -65,11 +55,20 @@ export interface OMLayerParams {
     weakFracMax: number;   // 약한 신호 slab 비율 > 값 → ★
     validFracMin: number;  // 유효 slab / 샘플 slab < 값 → ★ 전체
     outlierDropMax: number; // 이상치로 버린 slab 비율 > 값 → ★ 이상치 과다
+    wcI: number;            // 모재 이동평균 밝기
+    wcRun: number;
+    wcJump: number;
+    wcSearch: [number, number];
+    smoothStd: number;
+    smoothRun: number;
+    coatMaxPx: number;
+    coatMinPx: number;
+    blueFracMin: number;
 }
 
 export const DEFAULT_OM_PARAMS: OMLayerParams = {
     slabHalf: 15, xStep: 8, xMargin: 0.05,
-    resinBlue: 25, resinB: 100, resinMinPx: 50, resinGapRun: 20,
+    resinBlue: 25, resinB: 100, resinGreenSlack: 14, resinMinPx: 50, resinGapRun: 20,
     coreMargin: 15, coreCap: 60, coreRun: 25, upI: 60, alAbsentI: 60,
     brightI: 128, brightRun: 30,
     bondMinPeak: 25, bondWeakPeak: 35,
@@ -81,6 +80,8 @@ export const DEFAULT_OM_PARAMS: OMLayerParams = {
     outlierAbsPx: 120, outlierNbK: 5, outlierNbPx: 40,
     presenceLo: 0.2, presenceHi: 0.8, presentMin: 0.5, iqrRelMax: 0.35, weakFracMax: 0.5, validFracMin: 0.4,
     outlierDropMax: 0.15,
+    wcI: 195, wcRun: 16, wcJump: 10, wcSearch: [0.22, 0.88],
+    smoothStd: 8.5, smoothRun: 40, coatMaxPx: 280, coatMinPx: 8, blueFracMin: 0.04,
 };
 
 export type OMLayerName = 'Al2O3' | 'Bonding' | 'TiCN';
@@ -150,6 +151,34 @@ function firstRun(mask: Uint8Array, n: number, start: number, end: number): numb
     return -1;
 }
 
+/** mask[start:end] 에서 true 가 n 개 연속되는 마지막 런의 끝(포함) 인덱스, 없으면 -1 */
+function lastRunEnd(mask: Uint8Array, n: number, start: number, end: number): number {
+    let run = 0, last = -1;
+    const e = Math.min(end, mask.length);
+    for (let i = Math.max(0, start); i < e; i++) {
+        if (mask[i]) {
+            run++;
+            if (run >= n) last = i;
+        } else {
+            run = 0;
+        }
+    }
+    return last;
+}
+
+function rollingStd(a: Float32Array, k: number): Float32Array {
+    const n = a.length, out = new Float32Array(n);
+    const half = k >> 1;
+    for (let i = 0; i < n; i++) {
+        const lo = Math.max(0, i - half), hi = Math.min(n, i + half + 1);
+        let s = 0, sq = 0, c = hi - lo;
+        for (let j = lo; j < hi; j++) { s += a[j]; sq += a[j] * a[j]; }
+        const m = s / c;
+        out[i] = Math.sqrt(Math.max(0, sq / c - m * m));
+    }
+    return out;
+}
+
 /** 중심 이동평균 (가장자리는 가용 구간만) */
 function vsmooth(a: Float32Array, k: number): Float32Array {
     const n = a.length, half = k >> 1, out = new Float32Array(n);
@@ -174,8 +203,9 @@ function statPx(values: number[]): LayerStatPx {
     return { median: percentile(s, 0.5), p25: percentile(s, 0.25), p75: percentile(s, 0.75) };
 }
 
-function isResin(r: number, _g: number, b: number, p: OMLayerParams): boolean {
-    return b - r > p.resinBlue && b > p.resinB;
+function isResin(r: number, g: number, b: number, p: OMLayerParams): boolean {
+    return (b - r > p.resinBlue && b > p.resinB && b + p.resinGreenSlack >= g)
+        || (g - r > p.resinBlue && g > p.resinB && g >= b);
 }
 
 // ---------------------------------------------------------------- rotation
@@ -212,7 +242,7 @@ export function rotatedToOriginal(x2: number, y2: number, k: number, w: number, 
 export function detectResinRotation(data: Uint8ClampedArray, w: number, h: number, p: OMLayerParams = DEFAULT_OM_PARAMS): number {
     const m = 0.2;
     const bandH = Math.floor(h * m), bandW = Math.floor(w * m);
-    const score = [0, 0, 0, 0]; // top, right, bottom, left  → rotK 0,1,2,3
+    const score = [0, 0, 0, 0];
     const step = 2;
     for (let y = 0; y < h; y += step) {
         for (let x = 0; x < w; x += step) {
@@ -277,7 +307,7 @@ export function segmentSlabs(data: Uint8ClampedArray, w: number, h: number, p: O
             bright[y] = I[y] > p.brightI ? 1 : 0;
         }
 
-        // --- 수지 끝
+        // --- 파랑·청록·초록 수지 끝. 충분한 수지 구간 뒤의 경계를 찾는다.
         let resinEnd = -1, cum = 0, gap = 0;
         for (let y = 0; y < h; y++) {
             if (resin[y]) { cum++; gap = 0; }
@@ -288,11 +318,11 @@ export function segmentSlabs(data: Uint8ClampedArray, w: number, h: number, p: O
         }
         if (resinEnd < 0) continue;
 
+        const Is = vsmooth(I, p.smoothWin);
         const weak: OMLayerName[] = [];
         let Al2O3: LayerSpan | null = null, Bonding: LayerSpan | null = null, TiCN: LayerSpan | null = null;
-        let coatRef = resinEnd;   // 다음 층 탐색 시작점
+        let coatRef = resinEnd;
 
-        // --- Al2O3 (검은 띠): 구간 최소 밝기가 alAbsentI 이상이면 없음
         const zoneEnd = Math.min(h, resinEnd + 600);
         let minI = 255;
         for (let y = resinEnd; y < zoneEnd; y++) if (I[y] < minI) minI = I[y];
@@ -309,8 +339,6 @@ export function segmentSlabs(data: Uint8ClampedArray, w: number, h: number, p: O
                 }
                 Al2O3 = { start: alStart, end: alEnd };
                 coatRef = alEnd;
-
-                // --- Bonding: Al2O3 직후 R-B 피크. 피크 약하면 없음
                 const winEnd = Math.min(h, alEnd + p.warmPeakWin);
                 let peakIdx = alEnd, peak = -Infinity;
                 for (let y = alEnd; y < winEnd; y++) { const rb = R[y] - B[y]; if (rb > peak) { peak = rb; peakIdx = y; } }
@@ -325,9 +353,6 @@ export function segmentSlabs(data: Uint8ClampedArray, w: number, h: number, p: O
                 }
             }
         }
-
-        // --- TiCN / 모재: coatRef 이후 밝기 2단계. 대비 없으면 TiCN 없음
-        const Is = vsmooth(I, p.smoothWin);
         const t0 = coatRef + p.ticnRef[0], t1 = coatRef + p.ticnRef[1];
         const s0 = coatRef + p.subRef[0], s1 = coatRef + p.subRef[1];
         if (s1 > h) continue;
@@ -344,7 +369,7 @@ export function segmentSlabs(data: Uint8ClampedArray, w: number, h: number, p: O
             TiCN = { start: coatRef, end: subStart };
             if (contrast < p.ticnWeakContrast) weak.push('TiCN');
         }
-        if (Al2O3 === null && TiCN === null) continue;  // 코팅 없음(모재 노출) 또는 인식 실패
+        if (Al2O3 === null && TiCN === null) continue;
         out.push({ x, resinEnd, subStart, Al2O3, Bonding, TiCN, weak });
     }
     if (!p.rejectOutliersOn) return { slabs: out, nSampled, dropped: emptyDropped() };
@@ -482,6 +507,12 @@ export function analyzeOMLayers(imageData: ImageData, params: Partial<OMLayerPar
     const { data, width: w, height: h } = imageData;
 
     const scaleBarPx = detectScaleBarPx(data, w, h);
+    const failure = (reason: string, rotK = 0, nSlabs = 0, nSampled = 0): OMLayerResult => ({
+        ok: false, reason, rotK, nSlabs, nSampled, scaleBarPx,
+        rejectOutliersOn: p.rejectOutliersOn, ambiguous: true, flags: [reason],
+        lines: { Al2O3: { top: [], bottom: [] }, Bonding: { top: [], bottom: [] }, TiCN: { top: [], bottom: [] } },
+        layers: summarizeLayers([], 0, p).layers,
+    });
     const rotK = detectResinRotation(data, w, h, p);
     const rot = rotateRGBA(data, w, h, rotK);
     const { slabs, nSampled, dropped } = segmentSlabs(rot.data, rot.width, rot.height, p);
@@ -498,11 +529,26 @@ export function analyzeOMLayers(imageData: ImageData, params: Partial<OMLayerPar
 
     const summary = summarizeLayers(slabs, nSampled, p, p.rejectOutliersOn ? dropped : undefined);
     if (slabs.length < p.minSlabs) {
-        return {
-            ok: false, reason: `유효 slab 부족 (${slabs.length}/${nSampled})`, rotK, nSlabs: slabs.length, nSampled,
-            lines, scaleBarPx, rejectOutliersOn: p.rejectOutliersOn, ...summary, flags: [`유효 slab 부족 (${slabs.length}/${nSampled})`], ambiguous: true,
-        };
+        return failure(`유효 slab 부족 (${slabs.length}/${nSampled})`, rotK, slabs.length, nSampled);
     }
+    // 약한 신호/보통 편차는 ★로 보고한다. 측정 근거가 크게 무너진 경우만 실패.
+    const severe: string[] = [];
+    const supported = slabs.filter(s => OM_LAYER_ORDER.some(L => s[L])).length;
+    if (supported < p.minSlabs || supported < nSampled * 0.2) {
+        severe.push(`측정 가능한 구간이 너무 적음 (${supported}/${nSampled})`);
+    }
+    if (!OM_LAYER_ORDER.some(L => summary.layers[L].status === 'present')) severe.push('확인된 층 없음');
+    for (const L of OM_LAYER_ORDER) {
+        const px = summary.layers[L].px;
+        if (px && (!Number.isFinite(px.median) || px.median <= 0 || (px.p75 - px.p25) / px.median > 1)) {
+            severe.push(`${OM_LAYER_LABEL[L]} 두께 편차가 지나치게 큼`);
+        }
+        const d = dropped[L];
+        if (d.before >= p.minSlabs && d.drop / d.before > 0.6) {
+            severe.push(`${OM_LAYER_LABEL[L]} 경계 대부분이 이상치 (${d.drop}/${d.before})`);
+        }
+    }
+    if (severe.length) return failure(severe.join(' · '), rotK, supported, nSampled);
     return { ok: true, rotK, nSlabs: slabs.length, nSampled, lines, scaleBarPx, rejectOutliersOn: p.rejectOutliersOn, ...summary };
 }
 
@@ -528,9 +574,9 @@ export function reportOMLayers(res: OMLayerResult, pxToReal: (px: number) => num
         const info = res.layers[L];
         out[L] = {
             status: info.status, ambiguous: info.ambiguous, flags: info.flags, nPresent: info.nPresent,
-            value: info.px ? pxToReal(info.px.median) : null,
-            p25: info.px ? pxToReal(info.px.p25) : null,
-            p75: info.px ? pxToReal(info.px.p75) : null,
+            value: res.ok && info.px ? pxToReal(info.px.median) : null,
+            p25: res.ok && info.px ? pxToReal(info.px.p25) : null,
+            p75: res.ok && info.px ? pxToReal(info.px.p75) : null,
         };
     }
     return out;

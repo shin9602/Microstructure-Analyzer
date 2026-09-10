@@ -264,6 +264,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 <p className="text-[10px] font-bold text-purple-700 flex items-center gap-1.5">
                                     <Layers size={12} /> OM 층 자동측정 (Al₂O₃ / Bonding / TiCN)
                                 </p>
+                                <p className="text-[10px] text-purple-600">초록 수지도 분석합니다. 애매하면 ★와 측정값을 표시하고, 심각한 인식 오류만 실패 처리합니다.</p>
                                 <button
                                     className="btn-primary bg-purple-600 hover:bg-purple-700 border-none py-2 px-4 rounded-lg flex items-center justify-center gap-2 w-full text-white shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                     onClick={onOMAutoAnalyze}

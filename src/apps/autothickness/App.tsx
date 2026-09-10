@@ -1373,7 +1373,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
                     <div className="flex items-center gap-2 select-none">
                         <Ruler className="text-blue-600" size={18} />
                         <h1 className="text-sm font-bold text-slate-900 tracking-wide">
-                            Image Analyzer <span className="text-slate-400 font-normal ml-1">v2.0.0</span>
+                            Image Analyzer <span className="text-slate-400 font-normal ml-1">v2.0.4</span>
                         </h1>
                         {onBack && (
                             <button onClick={onBack} className="ml-2 text-slate-400 hover:text-slate-900 transition-colors bg-slate-100 hover:bg-slate-200 p-1 rounded-full" title="홈으로 이동">

@@ -231,6 +231,7 @@ export class Measurement {
     }
 
     drawOMLayers(ctx: CanvasRenderingContext2D, imageManager: ImageManager, calibrationManager: CalibrationManager) {
+        if (!this.data.ok) return;
         type Pt = { x: number; y: number };
         const lines = this.data.lines as Record<OMLayerName, { top: Pt[]; bottom: Pt[] }> | undefined;
         const layers = this.data.layers as Record<OMLayerName, OMLayerReport> | undefined;

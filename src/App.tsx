@@ -162,7 +162,7 @@ const Launcher: React.FC = () => {
                 </div>
 
                 <footer className="mt-12 text-center text-slate-500 text-sm">
-                    v2.0.0 • Integrated Research Environment
+                    v2.0.4 • Integrated Research Environment
                 </footer>
             </div>
         </div>
