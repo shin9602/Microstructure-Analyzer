@@ -1,0 +1,7 @@
+[SPATIAL8]
+CalibName=SEM 5000X
+UnitName=um
+PixPerUnit=44.6985,44.6985
+Origin=0,0
+AngleOffset=0
+SystemCal=0

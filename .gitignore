@@ -26,7 +26,10 @@ pdf_text.md
 ang_header.txt
 temp_header.txt
 _tools/
+_update_temp/
+.claude/
 .gemini/
+vite.config.ts.timestamp-*.mjs
 
 # Python caches
 __pycache__/
