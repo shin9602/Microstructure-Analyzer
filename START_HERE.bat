@@ -46,7 +46,7 @@ if /i not "!DO_UPDATE!"=="Y" goto REPAIR_UPDATE
 
 if exist "%ROOT%apply_update.ps1" (
     echo  Downloading and replacing files...
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%apply_update.ps1" -LatestVer "!LATEST_VER!" -Root "%ROOT%"
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%apply_update.ps1" -LatestVer "!LATEST_VER!"
     if errorlevel 1 (
         echo  Update failed. Files were NOT replaced.
         echo  Download AutoCalculator-!LATEST_VER!.zip from GitHub Releases and extract over this folder.
@@ -93,7 +93,7 @@ set "OK_VER="
 if exist "%ROOT%.update_ok" set /p OK_VER=<"%ROOT%.update_ok"
 if "!OK_VER!"=="!CURRENT_VER!" goto SKIP_UPDATE
 echo  Completing previous update ^(replacing leftover old files^)...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%apply_update.ps1" -LatestVer "!CURRENT_VER!" -Root "%ROOT%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%apply_update.ps1" -LatestVer "!CURRENT_VER!"
 if errorlevel 1 (
     echo  Could not finish the previous update.
     echo  Download the ZIP from GitHub Releases and extract over this folder.

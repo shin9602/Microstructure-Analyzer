@@ -1,13 +1,18 @@
 param(
     [Parameter(Mandatory = $true)][string]$LatestVer,
-    [Parameter(Mandatory = $true)][string]$Root
+    [string]$Root = ''
 )
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$LatestVer = $LatestVer.Trim()
-$Root = [System.IO.Path]::GetFullPath($Root.Trim().TrimEnd('\', '/'))
+$LatestVer = $LatestVer.Trim().Trim('"')
+# A trailing backslash before the closing quote (-Root "C:\x\") reaches here as C:\x" — strip it.
+$Root = $Root.Trim().Replace('"', '').TrimEnd('\', '/')
+if ([string]::IsNullOrWhiteSpace($Root)) {
+    $Root = $PSScriptRoot
+}
+$Root = [System.IO.Path]::GetFullPath($Root)
 $repo = 'shin9602/Microstructure-Analyzer'
 $zipUrl = "https://github.com/$repo/releases/download/$LatestVer/AutoCalculator-$LatestVer.zip"
 $work = Join-Path $env:TEMP ("ac_update_" + [guid]::NewGuid().ToString('N'))
