@@ -46,10 +46,16 @@ robocopy $root $tmpDir /E /XD node_modules _tools _update_temp .git .claude dist
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::Open($zipPath, 'Create')
+# Stamp timestamps so older START_HERE.bat robocopy (skip dest-newer) still overwrites.
+Get-ChildItem -Path $tmpDir -Recurse -File | ForEach-Object { $_.LastWriteTime = (Get-Date).AddMinutes(10) }
+
 $files = Get-ChildItem -Path $tmpDir -Recurse -File | Where-Object {
     $rel = $_.FullName.Substring($tmpDir.Length + 1)
     if ($rel -like "python\*.png") { return $false }
     if ($rel -like "python\*.txt") { return $false }
+    if ($_.Name -like "vite.config.ts.timestamp-*") { return $false }
+    if ($_.Name -eq ".update_ok") { return $false }
+    if ($_.Name -like "_tmp_*.ps1") { return $false }
     return $true
 }
 foreach ($file in $files) {
@@ -75,6 +81,9 @@ $actualFiles = Get-ChildItem -Path $root -Recurse -File | Where-Object {
     foreach ($p in $excludeFiles2) { if ($_.Name -like $p) { return $false } }
     if ($rel -like "python\*.png") { return $false }
     if ($rel -like "python\*.txt") { return $false }
+    if ($_.Name -like "vite.config.ts.timestamp-*") { return $false }
+    if ($_.Name -eq ".update_ok") { return $false }
+    if ($_.Name -like "_tmp_*.ps1") { return $false }
     return $true
 } | ForEach-Object { $_.FullName.Substring($root.Length + 1) -replace '\\','/' } | Sort-Object
 

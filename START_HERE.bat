@@ -21,30 +21,86 @@ if exist "%VERSION_FILE%" set /p CURRENT_VER=<"%VERSION_FILE%"
 echo  Current: %CURRENT_VER%
 
 set "LATEST_VER="
-powershell -NoProfile -NonInteractive -Command "try{$r=Invoke-RestMethod https://api.github.com/repos/shin9602/Microstructure-Analyzer/releases/latest -TimeoutSec 5;$r.tag_name}catch{}" > "%TEMP%\acver.txt" 2>nul
+powershell -NoProfile -NonInteractive -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; try { (Invoke-RestMethod 'https://api.github.com/repos/shin9602/Microstructure-Analyzer/releases/latest' -TimeoutSec 20).tag_name } catch { }" > "%TEMP%\acver.txt" 2>nul
 set /p LATEST_VER=<"%TEMP%\acver.txt"
 del "%TEMP%\acver.txt" >nul 2>&1
 
-if "!LATEST_VER!"=="" goto SKIP_UPDATE
-if "!CURRENT_VER!"=="!LATEST_VER!" (echo  Already latest version. ^(%CURRENT_VER%^) & goto SKIP_UPDATE)
-powershell -NoProfile -NonInteractive -Command "$installed=$null;$available=$null;if(-not [version]::TryParse($env:CURRENT_VER.TrimStart([char[]]'vV'),[ref]$installed)){exit 1};if(-not [version]::TryParse($env:LATEST_VER.TrimStart([char[]]'vV'),[ref]$available)){exit 1};if($available -le $installed){exit 1};exit 0"
-if errorlevel 1 (echo  Update skipped: installed version is newer or version check failed. & goto SKIP_UPDATE)
+if "!LATEST_VER!"=="" (
+    echo  Could not check GitHub for updates.
+    goto REPAIR_UPDATE
+)
+if "!CURRENT_VER!"=="!LATEST_VER!" (
+    echo  Already latest version. ^(!CURRENT_VER!^)
+    goto REPAIR_UPDATE
+)
+
+powershell -NoProfile -NonInteractive -Command "if ([string]::IsNullOrWhiteSpace($env:CURRENT_VER) -or [string]::IsNullOrWhiteSpace($env:LATEST_VER)) { exit 1 }; $c = $env:CURRENT_VER.Trim().TrimStart([char]0xFEFF).TrimStart('v','V'); $l = $env:LATEST_VER.Trim().TrimStart([char]0xFEFF).TrimStart('v','V'); $installed = New-Object Version; $available = New-Object Version; if (-not [version]::TryParse($c, [ref]$installed)) { exit 1 }; if (-not [version]::TryParse($l, [ref]$available)) { exit 1 }; if ($available -le $installed) { exit 1 }; exit 0"
+if errorlevel 1 (
+    echo  Update skipped: installed version is newer or version check failed.
+    goto REPAIR_UPDATE
+)
+
 echo  New version: !LATEST_VER!
 set /p DO_UPDATE=  Update now? [Y/N]:
-if /i not "!DO_UPDATE!"=="Y" goto SKIP_UPDATE
+if /i not "!DO_UPDATE!"=="Y" goto REPAIR_UPDATE
 
-set "ZIPURL=https://github.com/%REPO%/releases/download/!LATEST_VER!/AutoCalculator-!LATEST_VER!.zip"
-set "ZIPFILE=%ROOT%_update.zip"
-set "TMPDIR=%ROOT%_update_temp"
+if exist "%ROOT%apply_update.ps1" (
+    echo  Downloading and replacing files...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%apply_update.ps1" -LatestVer "!LATEST_VER!" -Root "%ROOT%"
+    if errorlevel 1 (
+        echo  Update failed. Files were NOT replaced.
+        echo  Download AutoCalculator-!LATEST_VER!.zip from GitHub Releases and extract over this folder.
+        pause
+        goto SKIP_UPDATE
+    )
+    echo  Done. Restarting...
+    timeout /t 2 >nul
+    start "" "%~f0"
+    exit
+)
+
+REM Fallback for PCs that do not have apply_update.ps1 yet (v2.0.5 and older).
+REM Extract to %%TEMP%% so OneDrive does not turn the ZIP into 0-byte files.
 echo  Downloading...
-powershell -NoProfile -NonInteractive -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12';Invoke-WebRequest '!ZIPURL!' -OutFile '!ZIPFILE!' -UseBasicParsing"
-if not exist "!ZIPFILE!" (echo  Download failed. & goto SKIP_UPDATE)
-mkdir "!TMPDIR!" 2>nul
-powershell -NoProfile -NonInteractive -Command "Expand-Archive '!ZIPFILE!' '!TMPDIR!' -Force"
-robocopy "!TMPDIR!" "%ROOT%" /E /XD node_modules _tools _update_temp /XF launcher.log error.log /NFL /NDL /NJH /NJS >nul 2>&1
-echo !LATEST_VER!> "%VERSION_FILE%"
-del "!ZIPFILE!" >nul 2>&1
+set "ZIPURL=https://github.com/%REPO%/releases/download/!LATEST_VER!/AutoCalculator-!LATEST_VER!.zip"
+set "ZIPFILE=%TEMP%\ac_update.zip"
+set "TMPDIR=%TEMP%\ac_update_extract"
+if exist "!ZIPFILE!" del /f /q "!ZIPFILE!" >nul 2>&1
+if exist "!TMPDIR!" rmdir /s /q "!TMPDIR!" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; Invoke-WebRequest -Uri $env:ZIPURL -OutFile $env:ZIPFILE -UseBasicParsing"
+if not exist "!ZIPFILE!" (
+    echo  Download failed.
+    goto SKIP_UPDATE
+)
+powershell -NoProfile -NonInteractive -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; if (Test-Path -LiteralPath $env:TMPDIR) { Remove-Item -LiteralPath $env:TMPDIR -Recurse -Force }; New-Item -ItemType Directory -Path $env:TMPDIR | Out-Null; [System.IO.Compression.ZipFile]::ExtractToDirectory($env:ZIPFILE, $env:TMPDIR); Get-ChildItem -LiteralPath $env:TMPDIR -Recurse -File | ForEach-Object { $rel = $_.FullName.Substring($env:TMPDIR.Length).TrimStart('\'); if ($rel -like 'node_modules\*') { return }; $dest = Join-Path $env:ROOT $rel; $dir = Split-Path $dest; if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }; Copy-Item -LiteralPath $_.FullName -Destination $dest -Force }"
+if errorlevel 1 (
+    echo  Extract or copy failed. version.txt was NOT changed.
+    pause
+    goto SKIP_UPDATE
+)
+if exist "!ZIPFILE!" del /f /q "!ZIPFILE!" >nul 2>&1
+if exist "!TMPDIR!" rmdir /s /q "!TMPDIR!" >nul 2>&1
 echo  Done. Restarting...
+timeout /t 2 >nul
+start "" "%~f0"
+exit
+
+:REPAIR_UPDATE
+REM Old updater wrote version.txt even when src files were not replaced.
+REM If apply_update.ps1 arrived, force-copy this version from GitHub once.
+if not exist "%ROOT%apply_update.ps1" goto SKIP_UPDATE
+set "OK_VER="
+if exist "%ROOT%.update_ok" set /p OK_VER=<"%ROOT%.update_ok"
+if "!OK_VER!"=="!CURRENT_VER!" goto SKIP_UPDATE
+echo  Completing previous update ^(replacing leftover old files^)...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%apply_update.ps1" -LatestVer "!CURRENT_VER!" -Root "%ROOT%"
+if errorlevel 1 (
+    echo  Could not finish the previous update.
+    echo  Download the ZIP from GitHub Releases and extract over this folder.
+    pause
+    goto SKIP_UPDATE
+)
+echo  Files repaired. Restarting...
 timeout /t 2 >nul
 start "" "%~f0"
 exit

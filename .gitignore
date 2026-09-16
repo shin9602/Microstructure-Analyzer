@@ -27,6 +27,7 @@ ang_header.txt
 temp_header.txt
 _tools/
 _update_temp/
+.update_ok
 .claude/
 .gemini/
 vite.config.ts.timestamp-*.mjs
