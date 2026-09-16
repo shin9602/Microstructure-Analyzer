@@ -11,6 +11,24 @@ import autoprefixer from 'autoprefixer'
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url))
 
+// version.txt is what START_HERE.bat updates, so the UI label must follow it.
+function readAppVersion(): string {
+  try {
+    const raw = fs.readFileSync(path.join(projectRoot, 'version.txt'), 'utf8')
+    const v = raw.replace(/^\uFEFF/, '').trim()
+    if (v) return v.startsWith('v') ? v : `v${v}`
+  } catch {
+    // fall through to package.json
+  }
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'))
+    if (pkg.version) return `v${pkg.version}`
+  } catch {
+    // ignore
+  }
+  return 'v?'
+}
+
 function hasNonAscii(value: string): boolean {
   return /[^\x00-\x7F]/.test(value)
 }
@@ -277,6 +295,9 @@ function pythonRunnerPlugin(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), pythonRunnerPlugin()],
+  define: {
+    __APP_VERSION__: JSON.stringify(readAppVersion()),
+  },
   // Store Vite cache in system temp dir to avoid OneDrive EPERM errors
   cacheDir: path.join(os.tmpdir(), 'autocalculator-vite-cache'),
   css: {
