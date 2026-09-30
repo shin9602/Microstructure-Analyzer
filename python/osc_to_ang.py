@@ -259,13 +259,13 @@ def write_ang(
     else:
         table = data[:, :10]
 
-    # Degrees for file (TSL .ang stores degrees)
-    deg = np.rad2deg(table[:, 0:3])
+    # TSL .ang stores Euler angles in radians (orix/MTEX read them as radians)
+    eul = table[:, 0:3]
 
     with out_path.open("w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
         for i in range(table.shape[0]):
-            phi1, Phi, phi2 = deg[i]
+            phi1, Phi, phi2 = eul[i]
             x, y = table[i, 3], table[i, 4]
             iq = table[i, 5] if table.shape[1] > 5 else 0.0
             ci = table[i, 6] if table.shape[1] > 6 else 0.0
