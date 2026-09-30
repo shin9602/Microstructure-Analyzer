@@ -25,6 +25,13 @@ import json
 
 warnings.filterwarnings('ignore')
 
+def _get_cmap(name):
+    """matplotlib 3.11 removed cm.get_cmap; colormaps[] works on 3.5+."""
+    registry = getattr(plt, "colormaps", None)
+    if registry is not None:
+        return registry[name]
+    return cm.get_cmap(name)
+
 def process_advanced_wc(file_path, output_dir, co_wt=None):
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     print(f"\n[Advanced Microstructure] Processing: {base_name}")
@@ -152,7 +159,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
     ipf_img = np.ones((rows, cols, 3)); ipf_img[mask_wc] = rgb_map[mask_wc]
     plt.imsave(os.path.join(output_dir, f"ADV_01_IPF_MAP_{base_name}.png"), ipf_img, dpi=300)
     
-    el_map = np.ones((rows, cols, 3)); cmap_el = cm.get_cmap('plasma')
+    el_map = np.ones((rows, cols, 3)); cmap_el = _get_cmap('plasma')
     for p in props: 
         if p.area >= 5 and p.minor_axis_length > 0:
             el_map[p.coords[:,0], p.coords[:,1]] = cmap_el(min(max((p.major_axis_length/p.minor_axis_length - 1.0)/2.0, 0), 1))[:3]
