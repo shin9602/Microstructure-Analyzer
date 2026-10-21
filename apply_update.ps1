@@ -6,6 +6,12 @@
     [switch]$VerifyOnly
 )
 $ErrorActionPreference = 'Stop'
+function Get-FileDigest([string]$Path) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '') }
+    finally { $stream.Dispose(); $algorithm.Dispose() }
+}
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 if ([string]::IsNullOrWhiteSpace($Root)) { $Root = $PSScriptRoot }
 $Root = [IO.Path]::GetFullPath($Root.Trim().Replace('"', '').TrimEnd('\', '/'))
@@ -28,7 +34,7 @@ function Test-Manifest([string]$Base, $Manifest) {
         $file = Resolve-Child $Base $entry.path
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $false }
         if ((Get-Item -LiteralPath $file).Length -ne $entry.size) { return $false }
-        if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $entry.sha256) { return $false }
+        if ((Get-FileDigest $file) -ne $entry.sha256) { return $false }
     }
     return $true
 }
@@ -94,7 +100,7 @@ try {
         Write-Host "  Downloading $LatestVer..."
         Invoke-WebRequest -Uri $download -OutFile $zipPath -UseBasicParsing -Headers $headers -TimeoutSec 120
         if ($asset -and $asset.digest -match '^sha256:(.+)$') {
-            if ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $Matches[1]) { throw 'Downloaded archive checksum mismatch.' }
+            if ((Get-FileDigest $zipPath) -ne $Matches[1]) { throw 'Downloaded archive checksum mismatch.' }
         }
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -133,7 +139,7 @@ try {
         $change = $changes[$index]
         try {
             if ($change.existed) {
-                $unchanged = (Test-Path -LiteralPath $change.target) -and ((Get-FileHash -LiteralPath $change.target -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $change.backup -Algorithm SHA256).Hash)
+                $unchanged = (Test-Path -LiteralPath $change.target) -and ((Get-FileDigest $change.target) -eq (Get-FileDigest $change.backup))
                 if (-not $unchanged) { Copy-Item -LiteralPath $change.backup -Destination $change.target -Force }
             }
             elseif (Test-Path -LiteralPath $change.target) { Remove-Item -LiteralPath $change.target -Force }

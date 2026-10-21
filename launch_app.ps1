@@ -1,5 +1,11 @@
 ﻿param([switch]$SkipUpdate, [switch]$VerifySetupOnly)
 $ErrorActionPreference = 'Stop'
+function Get-FileDigest([string]$Path) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '') }
+    finally { $stream.Dispose(); $algorithm.Dispose() }
+}
 $root = $PSScriptRoot
 Set-Location -LiteralPath $root
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -73,8 +79,11 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Python package setup failed.' }
     }
     Write-Host '[3/3] Checking npm packages...'
-    $lockHash = (Get-FileHash -LiteralPath (Join-Path $root 'package-lock.json') -Algorithm SHA256).Hash
-    $dependencyStamp = Join-Path $tools 'npm-lock.sha256'
+    # A release-number change alone must not reinstall all npm packages.
+    $dependencyScript = "const fs=require('fs'),crypto=require('crypto');const lock=JSON.parse(fs.readFileSync('package-lock.json','utf8'));delete lock.version;if(lock.packages&&lock.packages[''])delete lock.packages[''].version;console.log(crypto.createHash('sha256').update(JSON.stringify(lock)).digest('hex'));"
+    $lockHash = & node.exe -e $dependencyScript
+    if ($LASTEXITCODE -ne 0 -or $lockHash -notmatch '^[a-f0-9]{64}$') { throw 'Cannot verify npm dependency metadata.' }
+    $dependencyStamp = Join-Path $tools 'npm-dependencies.sha256'
     $previousHash = ''
     if (Test-Path -LiteralPath $dependencyStamp) { $previousHash = (Get-Content -LiteralPath $dependencyStamp -Raw).Trim() }
     $npmOK = (Test-Path -LiteralPath (Join-Path $root 'node_modules/.bin/vite.cmd')) -and $previousHash -eq $lockHash

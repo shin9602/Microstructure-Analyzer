@@ -1,5 +1,11 @@
 ﻿param([string]$Body = '', [switch]$BuildOnly, [switch]$SkipDownloadTest)
 $ErrorActionPreference = 'Stop'
+function Get-FileDigest([string]$Path) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '') }
+    finally { $stream.Dispose(); $algorithm.Dispose() }
+}
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $root = $PSScriptRoot
 $version = (Get-Content -LiteralPath (Join-Path $root 'version.txt') -Raw).Trim()
@@ -35,8 +41,8 @@ try {
     foreach ($relative in $runtime) {
         $source = Join-Path $root $relative
         $copied = Join-Path $stage $relative
-        $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
-        if ((Get-FileHash -LiteralPath $copied -Algorithm SHA256).Hash -ne $hash) { throw "Staged file does not match source: $relative" }
+        $hash = (Get-FileDigest $source)
+        if ((Get-FileDigest $copied) -ne $hash) { throw "Staged file does not match source: $relative" }
         $entries += [pscustomobject]@{ path = $relative.Replace('\','/'); size = (Get-Item -LiteralPath $copied).Length; sha256 = $hash }
         (Get-Item -LiteralPath $copied).LastWriteTime = (Get-Date).AddMinutes(10)
     }
@@ -47,7 +53,7 @@ try {
     [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $false)
     $installer = Join-Path $output 'AutoCalculator.cmd'
     Copy-Item -LiteralPath (Join-Path $root 'AutoCalculator.cmd') -Destination $installer -Force
-    $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $zipHash = (Get-FileDigest $zipPath).ToLowerInvariant()
     [IO.File]::WriteAllText(($zipPath + '.sha256'), ($zipHash + '  ' + [IO.Path]::GetFileName($zipPath)), [Text.UTF8Encoding]::new($false))
     Write-Host "Built $version : $($entries.Count) verified runtime files, $((Get-Item -LiteralPath $zipPath).Length) bytes"
     Write-Host "Single-file installer: $installer ($((Get-Item -LiteralPath $installer).Length) bytes)"
@@ -69,7 +75,7 @@ try {
     if (-not $SkipDownloadTest) {
         $download = Join-Path $work 'download-test.zip'
         Invoke-WebRequest "https://github.com/$repo/releases/download/$version/AutoCalculator-$version.zip" -OutFile $download -UseBasicParsing -TimeoutSec 120
-        if ((Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant() -ne $zipHash) { throw 'Published ZIP download checksum mismatch.' }
+        if ((Get-FileDigest $download).ToLowerInvariant() -ne $zipHash) { throw 'Published ZIP download checksum mismatch.' }
         $latest = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers @{ 'User-Agent'='AutoCalculator-Release-Test' }
         if ($latest.tag_name -ne $version) { throw "Latest release is $($latest.tag_name), expected $version" }
         Write-Host 'Published ZIP download and latest-release endpoint verified.'

@@ -1,8 +1,8 @@
 ﻿param([string]$PackagePath = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-if (-not $PackagePath) { $PackagePath = Join-Path $root 'distribution/AutoCalculator-v2.0.11.zip' }
 $version = (Get-Content -LiteralPath (Join-Path $root 'version.txt') -Raw).Trim()
+if (-not $PackagePath) { $PackagePath = Join-Path $root ('distribution/AutoCalculator-' + $version + '.zip') }
 $base = Join-Path $root ('analysis_results/update_tests/' + [guid]::NewGuid().ToString('N'))
 $install = Join-Path $base "다른 폴더 이름 O'Hara!"
 [IO.Directory]::CreateDirectory($install) | Out-Null

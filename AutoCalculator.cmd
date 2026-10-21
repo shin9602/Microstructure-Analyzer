@@ -7,6 +7,12 @@ if not "%AC_EXIT%"=="0" pause
 exit /b %AC_EXIT%
 # POWERSHELL_PAYLOAD
 $ErrorActionPreference = 'Stop'
+function Get-FileDigest([string]$Path) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '') }
+    finally { $stream.Dispose(); $algorithm.Dispose() }
+}
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $work = Join-Path ([IO.Path]::GetTempPath()) ('ac_boot_' + [guid]::NewGuid().ToString('N'))
 try {
@@ -31,7 +37,7 @@ try {
     $zip = Join-Path $work 'app.zip'
     Invoke-WebRequest $asset.browser_download_url -OutFile $zip -Headers $headers -UseBasicParsing -TimeoutSec 120
     if ($asset.digest -match '^sha256:(.+)$') {
-        if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $Matches[1]) { throw 'Download verification failed.' }
+        if ((Get-FileDigest $zip) -ne $Matches[1]) { throw 'Download verification failed.' }
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $source = Join-Path $work 'source'
