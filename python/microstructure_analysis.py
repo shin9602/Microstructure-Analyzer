@@ -17,19 +17,19 @@ from skimage.filters import threshold_otsu
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry, clean_phase_map, measured_boundaries
+from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry, clean_phase_map, measured_boundaries, grain_neighbor_connections
 from ebsd_exports import export_histogram, export_iq_map
 
 warnings.filterwarnings('ignore')
 
-def process_combined_microstructure(file_path, output_dir, co_wt=None):
+def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mode='all_other'):
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     print(f"\n[Microstructure Analysis] Processing: {base_name}", flush=True)
     
     try:
         xmap, table, xstep = load_ebsd(file_path)
         iq_raw, ci_raw, phase_raw = table[:, 5], table[:, 6], table[:, 7]
-        phase_mapping = resolve_phases(file_path, phase_raw)
+        phase_mapping = resolve_phases(file_path, phase_raw, gamma_mode)
     except Exception as e:
         print(f"Error loading {file_path}: {e}")
         return None
@@ -65,7 +65,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
     valid_scan_mask = raw_iq_2d >= 0
     
     # Shared phase-aware IQ split; source IDs are never analysis labels.
-    phases, iq_t1, phase_audit = split_wc_co(smoothed_iq_2d, raw_phases_2d, phase_mapping, co_wt, valid_scan_mask)
+    phases, iq_t1, phase_audit = split_wc_co(smoothed_iq_2d, raw_phases_2d, phase_mapping, co_wt, valid_scan_mask, gamma_mode)
     valid_scan_mask &= phases != 0
     phase_audit['source_excluded_points'] = int(np.sum(iq_raw < 0))
     phase_audit['source_total_points'] = int(len(iq_raw))
@@ -139,7 +139,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
         if p_id == 0: continue
         mask = (phases == p_id) & (ci_map >= 0.1)
         if not np.any(mask): continue
-        symmetry = analysis_symmetry(xmap, phase_mapping, p_id)
+        symmetry = analysis_symmetry(xmap, phase_mapping, p_id, gamma_mode)
         ori_2d = Orientation(rotations_map, symmetry=symmetry)
         y, x = np.meshgrid(np.arange(rows), np.arange(cols), indexing='ij')
         node_indices = y * cols + x
@@ -148,13 +148,9 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
             valid_right = (mask[:, :-1] & mask[:, 1:])
             valid_bottom = (mask[:-1, :] & mask[1:, :])
         else:
-            angle_right = ori_2d[:, :-1].angle_with(ori_2d[:, 1:])
-            valid_right = (mask[:, :-1] & mask[:, 1:]) & (angle_right <= angle_threshold_rad)
-            angle_bottom = ori_2d[:-1, :].angle_with(ori_2d[1:, :])
-            valid_bottom = (mask[:-1, :] & mask[1:, :]) & (angle_bottom <= angle_threshold_rad)
-            # TiC and NbC share a gamma family, not a crystallographic phase.
-            valid_right &= raw_phases_2d[:, :-1] == raw_phases_2d[:, 1:]
-            valid_bottom &= raw_phases_2d[:-1, :] == raw_phases_2d[1:, :]
+            valid_right, valid_bottom = grain_neighbor_connections(
+                ori_2d, mask, raw_phases_2d,
+                separate_sources=(int(p_id) != 3 or gamma_mode == 'named'))
         
         e1 = np.concatenate([node_indices[:, :-1][valid_right], node_indices[:-1, :][valid_bottom]])
         e2 = np.concatenate([node_indices[:, 1:][valid_right], node_indices[1:, :][valid_bottom]])
@@ -189,6 +185,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
     N_13 = np.sum((p_min==1) & (p_max==3))
     N_23 = np.sum((p_min==2) & (p_max==3))
     N_33 = np.sum((p_min==3) & (p_max==3))
+    phase_audit['gamma_internal_boundary_edges'] = int(N_33)
     
     # Contiguity Formulas
     C_WC_Line = (2*N_11)/(2*N_11 + N_12) if (2*N_11 + N_12) > 0 else 0
@@ -224,6 +221,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
     # Actually simpler mapping:
     _, first_indices = np.unique(dilated_grain_ids, return_index=True)
     g_phases = dilated_phases.ravel()[first_indices][mask]
+    phase_audit['gamma_grain_count'] = int(np.sum(g_phases == 3))
     d_eq = 2.0 * np.sqrt((cts * xstep**2) / np.pi)
     
     gs_wc_n = np.mean(d_eq[g_phases==1]) if np.any(g_phases==1) else 0

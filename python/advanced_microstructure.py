@@ -35,7 +35,7 @@ def _get_cmap(name):
         return registry[name]
     return cm.get_cmap(name)
 
-def process_advanced_wc(file_path, output_dir, co_wt=None):
+def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other'):
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     print(f"\n[Advanced Microstructure] Processing: {base_name}")
     print("- 데이터 불러오는 중...")
@@ -44,7 +44,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
     try:
         xmap, table, xstep = load_ebsd(file_path)
         iq_raw, ci_raw, phase_raw = table[:, 5], table[:, 6], table[:, 7]
-        phase_mapping = resolve_phases(file_path, phase_raw)
+        phase_mapping = resolve_phases(file_path, phase_raw, gamma_mode)
     except Exception as e:
         print(f"Error loading {file_path}: {e}")
         return None
@@ -74,10 +74,10 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
     smoothed_iq_2d = median_filter(raw_iq_2d, size=3)
     valid_scan_mask &= raw_iq_2d >= 0
     
-    phases, iq_t1, phase_audit = split_wc_co(smoothed_iq_2d, raw_phases_2d, phase_mapping, co_wt, valid_scan_mask)
+    phases, iq_t1, phase_audit = split_wc_co(smoothed_iq_2d, raw_phases_2d, phase_mapping, co_wt, valid_scan_mask, gamma_mode)
     valid_scan_mask &= phases != 0
     mask_wc = (phases == 1) & (ci_map >= 0.1)
-    xmap_symmetry = analysis_symmetry(xmap, phase_mapping, 1)
+    xmap_symmetry = analysis_symmetry(xmap, phase_mapping, 1, gamma_mode)
 
     ori_wc = Orientation(rotations_map, symmetry=xmap_symmetry)
     
@@ -141,7 +141,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
     plt.imsave(os.path.join(output_dir, f"ADV_01_IPF_MAP_{base_name}.png"), ipf_img, dpi=300)
 
     # Preserve the original phase/symmetry for this all-phase orientation view.
-    ipf_all, ipf_metadata = source_ipf_map(xmap, rotations_map, raw_phases_2d, valid_scan_mask)
+    ipf_all, ipf_metadata = source_ipf_map(xmap, rotations_map, raw_phases_2d, valid_scan_mask, phase_mapping, gamma_mode)
     plt.imsave(os.path.join(output_dir, f"ADV_08_IPF_ALL_{base_name}.png"), ipf_all, dpi=300)
     phase_audit['ipf_all_source_phases'] = ipf_metadata
     phase_audit['ipf_all_low_ci_points'] = int(np.sum(valid_scan_mask & (raw_phases_2d > 0) & (ci_map < .1)))

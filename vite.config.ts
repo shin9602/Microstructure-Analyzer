@@ -164,6 +164,13 @@ function pythonRunnerPlugin(): Plugin {
           const useTemp = urlObj.searchParams.get('temp') === '1'
           const coWt = urlObj.searchParams.get('co_wt')
           const compMap = urlObj.searchParams.get('comp_map')
+          const gammaMode = urlObj.searchParams.get('gamma_mode') ?? 'all_other'
+          if (!['all_other', 'named'].includes(gammaMode)) {
+            res.write(`data: ${JSON.stringify({ type: 'error', message: '지원하지 않는 gamma상 분석 모드입니다.' })}\n\n`)
+            res.write(`data: ${JSON.stringify({ type: 'done', code: 2 })}\n\n`)
+            res.end()
+            return
+          }
           
           const scriptName = 'run_ebsd.py'
           const pyPath = path.resolve(projectRoot, 'python', scriptName)
@@ -181,6 +188,7 @@ function pythonRunnerPlugin(): Plugin {
           
           // Use relative paths + cwd to avoid Windows Korean-path encoding issues in Python argv
           const args = [scriptRelPath, '--output', tempRelPath]
+          args.push('--gamma-mode', gammaMode)
           if (useTemp) {
               args.push('--uploaded', tempRelPath)
               res.write(`data: ${JSON.stringify({ type: 'info', message: 'Using uploaded files...' })}\n\n`)

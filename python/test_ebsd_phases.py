@@ -5,11 +5,61 @@ import unittest
 
 os.environ.setdefault('NUMBA_CACHE_DIR', str(Path(__file__).parent / '.temp_ebsd' / '.numba_cache'))
 import numpy as np
-from ebsd_phases import load_ebsd, recover_ang_table, resolve_phases, split_wc_co, phase_role, clean_phase_map, measured_boundaries, source_ipf_map
+from ebsd_phases import load_ebsd, recover_ang_table, resolve_phases, split_wc_co, phase_role, clean_phase_map, measured_boundaries, source_ipf_map, analysis_symmetry, grain_neighbor_connections
 from osc_to_ang import write_ang
 
 
 class PhaseTests(unittest.TestCase):
+    def test_default_gamma_includes_unknown_material_but_not_cobalt_or_unindexed(self):
+        header = '# Phase 1\n# MaterialName WC\n# Symmetry 62\n# Phase 2\n# MaterialName Co (Cobalt, beta - cubic)\n# Phase 4\n# MaterialName Ti C\n# Phase 5\n# MaterialName Mixed carbide\n'
+        default = self.mapping(header, [0, 1, 2, 4, 5])
+        legacy = self.mapping(header, [0, 1, 2, 4, 5], 'named')
+        self.assertEqual(default['Gamma'], [4, 5])
+        self.assertEqual(default['Co'], [2])
+        self.assertEqual(default['Other'], [])
+        self.assertEqual(legacy['Gamma'], [4])
+        self.assertEqual(legacy['Other'], [5])
+
+    def test_unified_gamma_merges_source_labels_but_keeps_real_misorientation(self):
+        from orix.quaternion import Orientation, symmetry
+        angles = np.deg2rad([[0, 0, 0], [1, 0, 0], [1, 0, 0], [10, 0, 0]])
+        orientations = Orientation(np.tile(Orientation.from_euler(angles).data, (2, 1, 1)), symmetry=symmetry.O)
+        source = np.tile([4, 4, 5, 5], (2, 1))
+        valid = np.ones(source.shape, dtype=bool)
+        merged, _ = grain_neighbor_connections(orientations, valid, source, separate_sources=False)
+        legacy, _ = grain_neighbor_connections(orientations, valid, source, separate_sources=True)
+        np.testing.assert_array_equal(merged, [[True, True, False], [True, True, False]])
+        np.testing.assert_array_equal(legacy, [[True, False, False], [True, False, False]])
+
+    def test_fcc_symmetry_equivalent_orientations_do_not_create_gamma_boundary(self):
+        from types import SimpleNamespace
+        from orix.quaternion import Orientation, symmetry
+        mapping = {'WC': [1], 'Co': [], 'Gamma': [4, 5]}
+        xmap = SimpleNamespace(phases={4: SimpleNamespace(point_group=symmetry.D6), 5: SimpleNamespace(point_group=symmetry.O)})
+        group = analysis_symmetry(xmap, mapping, 3)
+        self.assertEqual(group.name, symmetry.O.name)
+        with self.assertRaisesRegex(ValueError, 'incompatible'):
+            analysis_symmetry(xmap, mapping, 3, 'named')
+        orientation = Orientation.from_euler(np.deg2rad([[0, 0, 0], [90, 0, 0]]), symmetry=group).reshape(1, 2)
+        right, _ = grain_neighbor_connections(orientation, np.ones((1, 2), dtype=bool), np.array([[4, 5]]), False)
+        self.assertTrue(right[0, 0])
+
+    def test_all_phase_ipf_uses_unified_gamma_model_when_selected(self):
+        from types import SimpleNamespace
+        from orix.quaternion import Orientation, symmetry
+        phases = {4: SimpleNamespace(name='Mixed carbide', point_group=symmetry.D6)}
+        rotations = Orientation.from_euler([[.3, .7, .9]]).data.reshape(1, 1, 4)
+        args = (SimpleNamespace(phases=phases), rotations, np.array([[4]]), np.ones((1, 1), dtype=bool), {'Gamma': [4]})
+        merged, merged_meta = source_ipf_map(*args)
+        legacy, legacy_meta = source_ipf_map(*args, gamma_mode='named')
+        self.assertEqual(merged_meta[0]['point_group'], symmetry.O.name)
+        self.assertEqual(legacy_meta[0]['point_group'], symmetry.D6.name)
+        self.assertFalse(np.allclose(merged, legacy))
+
+    def test_invalid_gamma_mode_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'gamma analysis mode'):
+            resolve_phases('not-read.ang', np.array([1]), 'unsupported')
+
     def test_all_phase_ipf_uses_each_source_symmetry_and_keeps_invalid_white(self):
         from types import SimpleNamespace
         from orix.quaternion import Orientation, symmetry
@@ -107,11 +157,11 @@ class PhaseTests(unittest.TestCase):
             xmap, _, _ = load_ebsd(file)
             self.assertFalse(xmap._file_integrity['has_errors'])
 
-    def mapping(self, text, phases):
+    def mapping(self, text, phases, mode='all_other'):
         with tempfile.TemporaryDirectory() as directory:
             file = Path(directory) / 'sample.ang'
             file.write_text(text, encoding='utf-8')
-            return resolve_phases(file, np.asarray(phases))
+            return resolve_phases(file, np.asarray(phases), mode)
 
     def test_source_ids_and_cobalt_beta_are_not_gamma(self):
         mapping = self.mapping('# Phase 1\n# MaterialName Co (Cobalt, alpha - hex)\n# Phase 2\n# MaterialName Co (Cobalt, beta - cubic)\n# Phase 3\n# MaterialName W C\n# Symmetry 62\n', [1, 2, 3])

@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--co-wt", type=float)
     parser.add_argument("--comp-map", default="{}")
+    parser.add_argument('--gamma-mode', choices=('all_other', 'named'), default='all_other')
     args = parser.parse_args()
     folder = args.uploaded
     if not folder:
@@ -82,7 +83,7 @@ def main():
             analysis_file = file
             if file.suffix.lower() == ".osc":
                 analysis_file = convert_osc_to_ang(file, file_out / file.with_suffix(".ang").name)
-            record["basic"] = process_combined_microstructure(str(analysis_file), str(file_out), co_wt)
+            record["basic"] = process_combined_microstructure(str(analysis_file), str(file_out), co_wt, args.gamma_mode)
             if record["basic"] is None:
                 raise ValueError("기본 분석 실패: 위의 파일/상 정보 오류를 확인하세요.")
             audit = record["basic"]["PhaseAudit"]
@@ -98,7 +99,7 @@ def main():
                 record['warnings'].append(f"입자를 판정하지 못한 WC {audit.get('wc_unassigned_grain_points', 0):,}점, 감마상 {audit.get('gamma_unassigned_grain_points', 0):,}점은 입계 그림에서 회색으로 표시했습니다. 이 영역을 거리로 채우거나 테두리를 입계로 세지 않습니다. 면적분율에는 포함하지만 입도에서는 제외하며, 입도·연결도·평균자유행로는 판정 가능한 영역에 제한된 결과입니다.")
             emit({"type": "progress", "message": f"{file.name} · 형상·방위 분석", "percent": int((index + 0.5) / len(inputs) * 100)})
             try:
-                record["advanced"] = process_advanced_wc(str(analysis_file), str(file_out), co_wt)
+                record["advanced"] = process_advanced_wc(str(analysis_file), str(file_out), co_wt, args.gamma_mode)
                 if record["advanced"] is None:
                     raise ValueError("고급 지표를 계산하지 못했습니다.")
                 if record["advanced"].get("T_Idx") is None:
@@ -129,7 +130,7 @@ def main():
     csv_path = run_dir / "EBSD_summary.csv"
     rows = []
     for record in records:
-        row = {"Filename": record["name"]}
+        row = {"Filename": record["name"], 'GammaMode': record['basic']['PhaseAudit']['gamma_mode']}
         for section in ("basic", "advanced"):
             row.update({f"{section}_{key}": value for key, value in (record[section] or {}).items() if key not in ("PhaseAudit", "Filename")})
         row["Warnings"] = "; ".join(record["warnings"])
@@ -141,7 +142,8 @@ def main():
         writer.writerows(rows)
     txt_path = run_dir / "EBSD_report.txt"
     with txt_path.open("w", encoding="utf-8") as stream:
-        stream.write("EBSD 통합 분석 결과\n입도: 등가원직경(µm), 입계 기준: 5°, CI ≥ 0.1\n기본 입도: 보간 후 / 형상·방위 입도: 외곽 10px 및 5px 미만 입자 제외\nCo 입력값: WC-Co 영역 중량비 기준, IQ 순위로 위치 추정. 최종 비율은 입자 정리 후 달라질 수 있습니다.\n\n")
+        mode_label = 'WC·Co 외 gamma상 통합 (FCC)' if args.gamma_mode == 'all_other' else '상 이름 기준 (기존)'
+        stream.write(f"EBSD 통합 분석 결과\ngamma상 모드: {mode_label}\n기존 방위 사용 · 원본 패턴 재인덱싱 아님\n입도: 등가원직경(µm), 입계 기준: 5°, CI ≥ 0.1\n기본 입도: 판정 가능한 입자만 계산, 거리 보간 없음 / 형상·방위 입도: 외곽 10px 및 5px 미만 입자 제외\nCo 입력값: WC-Co 영역 중량비 기준, IQ 순위로 위치 추정.\n\n")
         stream.write(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
     archive = run_dir / "EBSD_all_results.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:

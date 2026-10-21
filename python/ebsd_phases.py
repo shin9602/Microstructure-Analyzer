@@ -11,6 +11,14 @@ from io import StringIO
 import numpy as np
 from skimage.filters import threshold_otsu
 
+GAMMA_MODES = ('all_other', 'named')
+
+
+def validate_gamma_mode(mode):
+    if mode not in GAMMA_MODES:
+        raise ValueError(f'Unknown gamma analysis mode: {mode}')
+    return mode
+
 
 def load_ebsd(path):
     """Vendor ANG headers may contain legacy single-byte symbols (e.g. µm²).
@@ -212,15 +220,18 @@ def measured_boundaries(phases, grain_ids, valid_scan_mask):
     return tuple(result)
 
 
-def source_ipf_map(xmap, rotations, source_phases, valid_scan_mask):
-    """Color source orientations with each recorded phase's own symmetry.
+def source_ipf_map(xmap, rotations, source_phases, valid_scan_mask, mapping=None, gamma_mode='all_other'):
+    """Color source orientations with the selected phase/symmetry model.
 
     Includes low-CI indexed points for inspection; never used to reconstruct
-    grains. IQ-derived WC/Co labels must not select the source crystal symmetry.
+    grains. Default gamma uses one cubic model; legacy mode uses source
+    symmetries. IQ-derived WC/Co labels never choose crystal symmetry.
     """
     from orix.quaternion import Orientation
     from orix.vector import Vector3d
     from orix.plot import IPFColorKeyTSL
+    from orix.quaternion import symmetry
+    validate_gamma_mode(gamma_mode)
     image = np.ones(source_phases.shape + (3,), dtype=float)
     metadata = []
     for phase_id in np.unique(source_phases[valid_scan_mask]):
@@ -229,6 +240,8 @@ def source_ipf_map(xmap, rotations, source_phases, valid_scan_mask):
         mask = valid_scan_mask & (source_phases == phase_id)
         phase = xmap.phases[int(phase_id)]
         group = phase.point_group
+        if mapping is not None and gamma_mode == 'all_other' and phase_id in mapping['Gamma']:
+            group = symmetry.O
         if group is None:
             image[mask] = .82
         else:
@@ -240,10 +253,16 @@ def source_ipf_map(xmap, rotations, source_phases, valid_scan_mask):
     return image, metadata
 
 
-def resolve_phases(path, raw_phases):
+def resolve_phases(path, raw_phases, gamma_mode='all_other'):
+    validate_gamma_mode(gamma_mode)
     definitions = read_phase_definitions(path)
     roles = {pid: phase_role(value) for pid, value in definitions.items()}
     active = {int(pid) for pid in np.unique(raw_phases) if pid > 0}
+    if gamma_mode == 'all_other':
+        # Zero is an unindexed point, not an additional material phase.
+        for pid in active | set(definitions):
+            if pid > 0 and roles.get(pid) not in ('WC', 'Co'):
+                roles[pid] = 'Gamma'
     unknown = [pid for pid in sorted(active) if roles.get(pid) is None]
     if unknown:
         details = ", ".join(f"{pid}: {definitions.get(pid, {}).get('MaterialName', 'missing phase definition')}" for pid in unknown)
@@ -262,8 +281,9 @@ def resolve_phases(path, raw_phases):
     return mapping
 
 
-def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None):
+def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode='all_other'):
     """Keep gamma; split all other scan points by IQ and optional Co wt%."""
+    validate_gamma_mode(gamma_mode)
     iq = np.asarray(iq)
     valid = np.ones(iq.shape, dtype=bool) if valid_mask is None else np.asarray(valid_mask, dtype=bool)
     gamma = np.isin(raw_phases, mapping["Gamma"]) & valid
@@ -296,6 +316,8 @@ def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None):
         threshold = float(threshold_otsu(values))
         phases[candidate & (iq <= threshold)] = 2
     audit = {
+        'gamma_mode': gamma_mode,
+        'gamma_symmetry_model': 'Unified FCC (432), original orientations' if gamma_mode == 'all_other' else 'Original source phases and symmetries',
         "source_phase_ids": mapping,
         "method": "Co wt% + IQ ranking" if composition else "IQ Otsu",
         "co_wt_percent": co_wt if composition else None,
@@ -314,7 +336,11 @@ def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None):
     return phases, threshold, audit
 
 
-def analysis_symmetry(xmap, mapping, internal_id):
+def analysis_symmetry(xmap, mapping, internal_id, gamma_mode='all_other'):
+    validate_gamma_mode(gamma_mode)
+    if int(internal_id) == 3 and gamma_mode == 'all_other':
+        from orix.quaternion import symmetry
+        return symmetry.O
     # Co components ignore orientation. WC/gamma must use their source IDs.
     role = {1: "WC", 2: "Co", 3: "Gamma"}[int(internal_id)]
     ids = mapping[role] if role != "Co" else mapping["WC"]
@@ -326,3 +352,19 @@ def analysis_symmetry(xmap, mapping, internal_id):
     if any(group.name != groups[0].name for group in groups[1:]):
         raise ValueError(f"Multiple incompatible symmetries for {role}")
     return groups[0]
+
+
+def grain_neighbor_connections(orientations, mask, source_phases, separate_sources):
+    """Connect adjacent measured orientations within 5 degrees.
+
+    A unified gamma grain may cross TiC/NbC source labels. Legacy mode keeps
+    source phase interfaces even when orientations are otherwise continuous.
+    """
+    angle_right = orientations[:, :-1].angle_with(orientations[:, 1:])
+    angle_bottom = orientations[:-1, :].angle_with(orientations[1:, :])
+    right = mask[:, :-1] & mask[:, 1:] & (angle_right <= np.deg2rad(5.0))
+    bottom = mask[:-1, :] & mask[1:, :] & (angle_bottom <= np.deg2rad(5.0))
+    if separate_sources:
+        right &= source_phases[:, :-1] == source_phases[:, 1:]
+        bottom &= source_phases[:-1, :] == source_phases[1:, :]
+    return right, bottom
