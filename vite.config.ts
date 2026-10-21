@@ -1,7 +1,8 @@
 import { defineConfig } from 'vite'
 import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import { spawn, execSync } from 'child_process'
+import { spawn } from 'child_process'
+import { StringDecoder } from 'string_decoder'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -29,25 +30,6 @@ function readAppVersion(): string {
   return 'v?'
 }
 
-function hasNonAscii(value: string): boolean {
-  return /[^\x00-\x7F]/.test(value)
-}
-
-function getWindowsShortPath(longPath: string): string {
-  if (process.platform !== 'win32' || !fs.existsSync(longPath)) return longPath
-  try {
-    const escaped = longPath.replace(/'/g, "''")
-    const short = execSync(
-      `powershell -NoProfile -Command "(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${escaped}').ShortPath"`,
-      { encoding: 'utf8' },
-    ).trim()
-    if (short && fs.existsSync(short)) return short
-  } catch {
-    // Fall back to the original path when 8.3 names are unavailable.
-  }
-  return longPath
-}
-
 function isWindowsStorePython(exe: string): boolean {
   const normalized = exe.toLowerCase()
   return normalized.includes('windowsapps')
@@ -72,36 +54,10 @@ function resolvePythonCommand(): string {
 }
 
 function spawnPythonProcess(pythonCmd: string, args: string[], cwd: string) {
-  const env = {
-    ...process.env,
-    PYTHONUTF8: '1',
-    PYTHONIOENCODING: 'utf-8',
-  }
-
-  if (process.platform !== 'win32' || !hasNonAscii(cwd)) {
-    return spawn(pythonCmd, ['-u', ...args], { cwd, env })
-  }
-
-  const shortCwd = getWindowsShortPath(cwd)
-  const shortPython = path.isAbsolute(pythonCmd) ? getWindowsShortPath(pythonCmd) : pythonCmd
-  const batPath = path.join(os.tmpdir(), `ac_ebsd_${Date.now()}.bat`)
-  const quotedArgs = args.map((arg) => `"${arg.replace(/"/g, '""')}"`).join(' ')
-  const batContent = [
-    '@echo off',
-    'chcp 65001 >nul',
-    `cd /d "${shortCwd.replace(/"/g, '""')}"`,
-    'set PYTHONUTF8=1',
-    'set PYTHONIOENCODING=utf-8',
-    `"${shortPython.replace(/"/g, '""')}" -u ${quotedArgs}`,
-  ].join('\r\n')
-
-  fs.writeFileSync(batPath, batContent, 'utf8')
-
-  const child = spawn('cmd.exe', ['/d', '/c', batPath], { env, windowsHide: true })
-  child.on('close', () => {
-    try { fs.unlinkSync(batPath) } catch { /* ignore */ }
+  return spawn(pythonCmd, ['-X', 'utf8', '-u', ...args], {
+    cwd, windowsHide: true,
+    env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', MPLBACKEND: 'Agg' },
   })
-  return child
 }
 
 function pythonRunnerPlugin(): Plugin {
@@ -130,7 +86,7 @@ function pythonRunnerPlugin(): Plugin {
         if (req.url && req.url.startsWith('/api/upload-ebsd')) {
            const urlObj = new URL(req.url, 'http://localhost');
            const filename = urlObj.searchParams.get('filename');
-           if (!filename) {
+           if (!filename || path.basename(filename) !== filename || !/\.(ang|osc)$/i.test(filename)) {
                res.end('No filename');
                return;
            }
@@ -141,7 +97,8 @@ function pythonRunnerPlugin(): Plugin {
            const destPath = path.join(tempPath, filename);
            const writeStream = fs.createWriteStream(destPath);
            req.pipe(writeStream);
-           req.on('end', () => {
+           writeStream.on('error', (error) => { res.statusCode = 500; res.end(JSON.stringify({ success: false, error: error.message })); });
+           writeStream.on('finish', () => {
              const lower = filename.toLowerCase();
              if (!lower.endsWith('.osc')) {
                res.end(JSON.stringify({ success: true, file: filename }));
@@ -175,7 +132,9 @@ function pythonRunnerPlugin(): Plugin {
 
         if (req.url && req.url.startsWith('/api/ebsd-results/')) {
            const requestedFile = decodeURIComponent(req.url.replace('/api/ebsd-results/', '').split('?')[0]);
-           const filePath = path.resolve(projectRoot, 'python', '.temp_ebsd', requestedFile);
+           const resultsRoot = path.resolve(projectRoot, 'python', '.temp_ebsd');
+           const filePath = path.resolve(resultsRoot, requestedFile);
+           if (!filePath.startsWith(resultsRoot + path.sep)) { res.statusCode = 403; res.end('Invalid result path'); return; }
            if (!fs.existsSync(filePath)) {
                res.statusCode = 404;
                res.end('Not found');
@@ -185,6 +144,8 @@ function pythonRunnerPlugin(): Plugin {
            if (filePath.endsWith('.png')) res.setHeader('Content-Type', 'image/png');
            if (filePath.endsWith('.txt')) res.setHeader('Content-Type', 'text/plain; charset=utf-8');
            if (filePath.endsWith('.csv')) res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+           if (filePath.endsWith('.json')) res.setHeader('Content-Type', 'application/json; charset=utf-8');
+           if (filePath.endsWith('.zip')) res.setHeader('Content-Type', 'application/zip');
            
            res.setHeader('Cache-Control', 'public, max-age=0');
            res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(requestedFile)}"; filename*=UTF-8''${encodeURIComponent(requestedFile)}`);
@@ -200,14 +161,12 @@ function pythonRunnerPlugin(): Plugin {
           res.setHeader('Connection', 'keep-alive')
 
           const urlObj = new URL(req.url, 'http://localhost')
-          const isAdvanced = req.url.includes('advanced')
           const useTemp = urlObj.searchParams.get('temp') === '1'
           const coWt = urlObj.searchParams.get('co_wt')
           const compMap = urlObj.searchParams.get('comp_map')
           
-          const scriptName = isAdvanced ? 'advanced_microstructure.py' : 'microstructure_analysis.py'
+          const scriptName = 'run_ebsd.py'
           const pyPath = path.resolve(projectRoot, 'python', scriptName)
-          const tempPath = path.resolve(projectRoot, 'python', '.temp_ebsd')
           const scriptRelPath = path.join('python', scriptName)
           const tempRelPath = path.join('python', '.temp_ebsd')
 
@@ -221,7 +180,7 @@ function pythonRunnerPlugin(): Plugin {
           res.write(`data: ${JSON.stringify({ type: 'info', message: `Starting Python Analyzer (${scriptName})...` })}\n\n`)
           
           // Use relative paths + cwd to avoid Windows Korean-path encoding issues in Python argv
-          const args = [scriptRelPath]
+          const args = [scriptRelPath, '--output', tempRelPath]
           if (useTemp) {
               args.push('--uploaded', tempRelPath)
               res.write(`data: ${JSON.stringify({ type: 'info', message: 'Using uploaded files...' })}\n\n`)
@@ -240,49 +199,44 @@ function pythonRunnerPlugin(): Plugin {
           res.write(`data: ${JSON.stringify({ type: 'info', message: `Python: ${path.basename(pythonCmd)}` })}\n\n`)
           const pythonProcess = spawnPythonProcess(pythonCmd, args, projectRoot)
 
-          pythonProcess.stdout.on('data', (data) => {
-            const str = data.toString()
-            str.split('\n').forEach((line: string) => {
-              if (line.trim()) {
-                res.write(`data: ${JSON.stringify({ type: 'log', message: line })}\n\n`)
-              }
-            })
-          })
-
-          pythonProcess.stderr.on('data', (data) => {
-            const str = data.toString()
-            str.split('\n').forEach((line: string) => {
-              if (line.trim()) {
-                res.write(`data: ${JSON.stringify({ type: 'error', message: line })}\n\n`)
-              }
-            })
-          })
-
-          pythonProcess.on('close', (code) => {
-            if (code === 0) {
+          let receivedResults = false
+          let finished = false
+          const send = (payload: unknown) => { if (!res.destroyed && !res.writableEnded) res.write(`data: ${JSON.stringify(payload)}\n\n`) }
+          const decoder = new StringDecoder('utf8')
+          let pending = ''
+          const line = (value: string) => {
+            if (!value.trim()) return
+            if (value.startsWith('JSON_DATA:')) {
               try {
-                const allFiles = fs.readdirSync(tempPath);
-                const images = allFiles.filter((f: string) => f.toLowerCase().endsWith('.png'));
-                const csvFiles = allFiles.filter((f: string) => f.toLowerCase().endsWith('.csv'));
-                const txtFiles = allFiles.filter((f: string) => f.toLowerCase().endsWith('.txt'));
-                const resultPack = {
-                  type: 'result_pack',
-                  mode: isAdvanced ? 'advanced' : 'basic',
-                  images,
-                  csv: csvFiles[0] || '',
-                  txt: txtFiles[0] || '',
-                };
-                res.write(`data: ${JSON.stringify(resultPack)}\n\n`);
-              } catch (err) {
-                console.error('Failed to scan results directory:', err);
-              }
+                const payload = JSON.parse(value.slice(10))
+                if (payload.type === 'result_pack') receivedResults = true
+                send(payload)
+              } catch { send({ type: 'error', message: '분석 결과 메시지를 읽지 못했습니다.' }) }
+            } else send({ type: 'log', message: value })
+          }
+          pythonProcess.stdout.on('data', (chunk) => {
+            pending += decoder.write(chunk)
+            let newline: number
+            while ((newline = pending.indexOf('\n')) >= 0) {
+              line(pending.slice(0, newline).replace(/\r$/, ''))
+              pending = pending.slice(newline + 1)
             }
-            res.write(`data: ${JSON.stringify({ type: 'done', code })}\n\n`)
+          })
+          pythonProcess.stderr.on('data', (chunk) => send({ type: 'warning', message: chunk.toString() }))
+          pythonProcess.on('error', (error) => {
+            send({ type: 'error', message: error.message })
+          })
+          pythonProcess.on('close', (code) => {
+            finished = true
+            pending += decoder.end()
+            line(pending)
+            if (code === 0 && !receivedResults) send({ type: 'error', message: '분석 결과가 생성되지 않았습니다.' })
+            send({ type: 'done', code: code === 0 && receivedResults ? 0 : (code || 1) })
             res.end()
           })
-          
-          req.on('close', () => {
-             pythonProcess.kill()
+
+          res.on('close', () => {
+             if (!finished) pythonProcess.kill()
           })
           return
         }

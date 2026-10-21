@@ -1,136 +1,83 @@
-param(
-    [string]$Body = "",
-    [switch]$SkipDownloadTest
-)
-
-$ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ver = (Get-Content "$root\version.txt" -Raw).Trim()
-$tmpDir = Join-Path $env:TEMP "ac_build_tmp"
-$zipPath = Join-Path $env:TEMP "AutoCalculator-$ver.zip"
-$tokenPath = Join-Path $root "token.txt"
-$repo = "shin9602/Microstructure-Analyzer"
-
-if (-not (Test-Path $tokenPath)) {
-    Write-Error "token.txt not found at $tokenPath"
-}
-
-if ($Body -eq "") {
-    $Body = "AutoCalculator $ver"
-}
-
-$token = [System.IO.File]::ReadAllText($tokenPath).Trim()
-$headers = @{ Authorization = "token $token"; "Content-Type" = "application/json" }
-
-Write-Output "=== AutoCalculator Release: $ver ==="
-
-# 1) Create GitHub release
-$releaseBody = @{
-    tag_name = $ver
-    name = $ver
-    body = $Body
-    draft = $false
-    prerelease = $false
-} | ConvertTo-Json
-
-$r = Invoke-RestMethod "https://api.github.com/repos/$repo/releases" -Method Post -Headers $headers -Body $releaseBody
-$releaseId = $r.id
-Write-Output "Release created: $($r.tag_name) (id: $releaseId)"
-
-# 2) robocopy to temp (OneDrive symlink workaround)
-if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
-New-Item -ItemType Directory -Path $tmpDir | Out-Null
-robocopy $root $tmpDir /E /XD node_modules _tools _update_temp .git .claude dist dist-ssr __pycache__ .venv venv env .temp_ebsd /XF "*.log" "token.txt" "*.zip" "*.7z" "*.rar" "pdf_text.md" "ang_header.txt" "temp_header.txt" /NFL /NDL /NJH /NJS | Out-Null
-
-# 3) Build ZIP (foreach loop required)
-if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [System.IO.Compression.ZipFile]::Open($zipPath, 'Create')
-# Stamp timestamps so older START_HERE.bat robocopy (skip dest-newer) still overwrites.
-Get-ChildItem -Path $tmpDir -Recurse -File | ForEach-Object { $_.LastWriteTime = (Get-Date).AddMinutes(10) }
-
-$files = Get-ChildItem -Path $tmpDir -Recurse -File | Where-Object {
-    $rel = $_.FullName.Substring($tmpDir.Length + 1)
-    if ($rel -like "python\*.png") { return $false }
-    if ($rel -like "python\*.txt") { return $false }
-    if ($_.Name -like "vite.config.ts.timestamp-*") { return $false }
-    if ($_.Name -eq ".update_ok") { return $false }
-    if ($_.Name -like "_tmp_*.ps1") { return $false }
-    return $true
-}
-foreach ($file in $files) {
-    $rel = $file.FullName.Substring($tmpDir.Length + 1)
-    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $rel) | Out-Null
-}
-$zip.Dispose()
-
-# 4) Upload ZIP
-$headers2 = @{ Authorization = "token $token"; "Content-Type" = "application/zip" }
-$uploadUrl = "https://uploads.github.com/repos/$repo/releases/$releaseId/assets?name=AutoCalculator-$ver.zip"
-$bytes = [System.IO.File]::ReadAllBytes($zipPath)
-$r2 = Invoke-RestMethod $uploadUrl -Method Post -Headers $headers2 -Body $bytes
-Write-Output "Upload complete: $($r2.name) ($($r2.size) bytes)"
-
-# 5) Verify ZIP contents
-$excludeDirs2 = @("node_modules","_tools","_update_temp",".git",".claude","dist","dist-ssr","__pycache__",".venv","venv","env",".temp_ebsd")
-$excludeFiles2 = @("*.log","token.txt","*.zip","*.7z","*.rar","pdf_text.md","ang_header.txt","temp_header.txt")
-$actualFiles = Get-ChildItem -Path $root -Recurse -File | Where-Object {
-    $rel = $_.FullName.Substring($root.Length + 1)
-    $parts = $rel -split '\\'
-    foreach ($d in $excludeDirs2) { if ($parts -contains $d) { return $false } }
-    foreach ($p in $excludeFiles2) { if ($_.Name -like $p) { return $false } }
-    if ($rel -like "python\*.png") { return $false }
-    if ($rel -like "python\*.txt") { return $false }
-    if ($_.Name -like "vite.config.ts.timestamp-*") { return $false }
-    if ($_.Name -eq ".update_ok") { return $false }
-    if ($_.Name -like "_tmp_*.ps1") { return $false }
-    return $true
-} | ForEach-Object { $_.FullName.Substring($root.Length + 1) -replace '\\','/' } | Sort-Object
-
-$zipCheck = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
-$zipFiles = $zipCheck.Entries | ForEach-Object { $_.FullName -replace '\\','/' } | Sort-Object
-$zipCheck.Dispose()
-
-$missing = $actualFiles | Where-Object { $zipFiles -notcontains $_ }
-if ($missing) {
-    Write-Output "[ERROR] Missing files in ZIP — aborting:"
-    $missing | ForEach-Object { Write-Output "  MISSING: $_" }
-    Remove-Item $zipPath -Force
-    Remove-Item $tmpDir -Recurse -Force
-    exit 1
-}
-Write-Output "[OK] ZIP verified — $($actualFiles.Count) files"
-
-# 6) Cleanup temp
-Remove-Item $zipPath -Force
-Remove-Item $tmpDir -Recurse -Force
-
-# 7) Verify latest release
-Start-Sleep -Seconds 2
-$latest = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
-Write-Output "Latest release: $($latest.tag_name)"
-if ($latest.tag_name -ne $ver) {
-    Write-Output "[WARN] /releases/latest returned $($latest.tag_name), expected $ver"
-}
-
-# 8) Download test
-if (-not $SkipDownloadTest) {
-    $zipUrl = "https://github.com/$repo/releases/download/$ver/AutoCalculator-$ver.zip"
-    $outFile = Join-Path $env:TEMP "test_download_$ver.zip"
-    [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
-    Invoke-WebRequest $zipUrl -OutFile $outFile -UseBasicParsing
-    $size = (Get-Item $outFile).Length
-    Write-Output "Download test: $size bytes"
-    $z = [System.IO.Compression.ZipFile]::OpenRead($outFile)
-    Write-Output "ZIP entries: $($z.Entries.Count)"
-    $vf = $z.Entries | Where-Object { $_.FullName -eq "version.txt" }
-    $versionInZip = [System.IO.StreamReader]::new($vf.Open()).ReadToEnd()
-    Write-Output "version.txt in ZIP: $versionInZip"
-    $z.Dispose()
-    Remove-Item $outFile -Force
-    if ($versionInZip.Trim() -ne $ver) {
-        Write-Error "version.txt mismatch in downloaded ZIP"
+﻿param([string]$Body = '', [switch]$BuildOnly, [switch]$SkipDownloadTest)
+$ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$root = $PSScriptRoot
+$version = (Get-Content -LiteralPath (Join-Path $root 'version.txt') -Raw).Trim()
+$repo = 'shin9602/Microstructure-Analyzer'
+$output = Join-Path $root 'distribution'
+[IO.Directory]::CreateDirectory($output) | Out-Null
+$zipPath = Join-Path $output "AutoCalculator-$version.zip"
+$work = Join-Path ([IO.Path]::GetTempPath()) ('ac_release_' + [guid]::NewGuid().ToString('N'))
+$stage = Join-Path $work 'payload'
+[IO.Directory]::CreateDirectory($stage) | Out-Null
+try {
+    $tracked = @(& git -C $root ls-files)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot list version-controlled release files.' }
+    $runtime = @($tracked | Where-Object {
+        (($_ -match '^(src/|public/|python/)') -or ($_ -match '^(AutoCalculator\.cmd|START_HERE\.bat|apply_update\.ps1|launch_app\.ps1|requirements\.txt|version\.txt|package(-lock)?\.json|index\.html|vite\.config\.ts|tsconfig.*\.json|tailwind\.config\.js|postcss\.config\.(js|cjs)|eslint\.config\.js|README\.md|LICENSE)$')) -and
+        $_ -notmatch '(\.bak$|/test_[^/]+\.py$|implementation_plan\.md$|\.(osc|ang|zip|log)$)'
+    })
+    foreach ($required in @('AutoCalculator.cmd','START_HERE.bat','apply_update.ps1','launch_app.ps1','requirements.txt','python/run_ebsd.py','python/ebsd_phases.py','python/ebsd_exports.py','src/apps/ebsd/ResultsDashboard.tsx')) {
+        if ($runtime -notcontains $required) { throw "Required release file is not staged/tracked: $required" }
+    }
+    # Copy only tracked runtime files. No measurement files, credentials, caches,
+    # node_modules, installed Python or generated reports can enter the package.
+    foreach ($group in ($runtime | Group-Object { Split-Path -Parent $_ })) {
+        $relativeDirectory = $group.Name
+        $from = $root; $to = $stage
+        if ($relativeDirectory) { $from = Join-Path $root $relativeDirectory; $to = Join-Path $stage $relativeDirectory }
+        [IO.Directory]::CreateDirectory($to) | Out-Null
+        $names = @($group.Group | ForEach-Object { Split-Path -Leaf $_ })
+        & robocopy $from $to @names /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -gt 7) { throw "Release staging failed: $relativeDirectory" }
+    }
+    $entries = @()
+    foreach ($relative in $runtime) {
+        $source = Join-Path $root $relative
+        $copied = Join-Path $stage $relative
+        $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+        if ((Get-FileHash -LiteralPath $copied -Algorithm SHA256).Hash -ne $hash) { throw "Staged file does not match source: $relative" }
+        $entries += [pscustomobject]@{ path = $relative.Replace('\','/'); size = (Get-Item -LiteralPath $copied).Length; sha256 = $hash }
+        (Get-Item -LiteralPath $copied).LastWriteTime = (Get-Date).AddMinutes(10)
+    }
+    $manifest = [ordered]@{ schema = 1; version = $version; commit = (& git -C $root rev-parse HEAD); files = $entries }
+    [IO.File]::WriteAllText((Join-Path $stage 'update-manifest.json'), ($manifest | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+    [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $false)
+    $installer = Join-Path $output 'AutoCalculator.cmd'
+    Copy-Item -LiteralPath (Join-Path $root 'AutoCalculator.cmd') -Destination $installer -Force
+    $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText(($zipPath + '.sha256'), ($zipHash + '  ' + [IO.Path]::GetFileName($zipPath)), [Text.UTF8Encoding]::new($false))
+    Write-Host "Built $version : $($entries.Count) verified runtime files, $((Get-Item -LiteralPath $zipPath).Length) bytes"
+    Write-Host "Single-file installer: $installer ($((Get-Item -LiteralPath $installer).Length) bytes)"
+    if ($BuildOnly) { exit 0 }
+    $tokenFile = Join-Path $root 'token.txt'
+    if ($env:GITHUB_TOKEN) { $token = $env:GITHUB_TOKEN } elseif (Test-Path -LiteralPath $tokenFile) { $token = [IO.File]::ReadAllText($tokenFile).Trim() } else { throw 'GitHub authentication is unavailable.' }
+    $headers = @{ Authorization = "Bearer $token"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'AutoCalculator-Release' }
+    if (-not $Body) { $Body = "AutoCalculator $version" }
+    $data = @{ tag_name=$version; target_commitish=(& git -C $root rev-parse HEAD); name=$version; body=$Body; draft=$true; prerelease=$false } | ConvertTo-Json
+    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases" -Method Post -Headers $headers -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($data))
+    foreach ($file in @($zipPath, $installer, ($zipPath + '.sha256'))) {
+        $name = [Uri]::EscapeDataString([IO.Path]::GetFileName($file))
+        $asset = Invoke-RestMethod "https://uploads.github.com/repos/$repo/releases/$($release.id)/assets?name=$name" -Method Post -Headers $headers -ContentType 'application/octet-stream' -InFile $file
+        if ($asset.size -ne (Get-Item -LiteralPath $file).Length) { throw "Uploaded asset size mismatch: $file" }
+        Write-Host "Uploaded $($asset.name)"
+    }
+    $publish = @{ draft=$false; make_latest='true' } | ConvertTo-Json
+    $published = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/$($release.id)" -Method Patch -Headers $headers -ContentType 'application/json' -Body $publish
+    if (-not $SkipDownloadTest) {
+        $download = Join-Path $work 'download-test.zip'
+        Invoke-WebRequest "https://github.com/$repo/releases/download/$version/AutoCalculator-$version.zip" -OutFile $download -UseBasicParsing -TimeoutSec 120
+        if ((Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant() -ne $zipHash) { throw 'Published ZIP download checksum mismatch.' }
+        $latest = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers @{ 'User-Agent'='AutoCalculator-Release-Test' }
+        if ($latest.tag_name -ne $version) { throw "Latest release is $($latest.tag_name), expected $version" }
+        Write-Host 'Published ZIP download and latest-release endpoint verified.'
+    }
+    Write-Host "Release complete: $($published.html_url)"
+} finally {
+    $prefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if ([IO.Path]::GetFullPath($work).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $work) -match '^ac_release_[a-f0-9]{32}$') {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
-
-Write-Output "=== Release $ver complete ==="

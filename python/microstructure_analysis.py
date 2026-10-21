@@ -17,6 +17,9 @@ from skimage.filters import threshold_otsu
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
+from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry
+from ebsd_exports import export_histogram
+
 warnings.filterwarnings('ignore')
 
 def process_combined_microstructure(file_path, output_dir, co_wt=None):
@@ -24,23 +27,14 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
     print(f"\n[Microstructure Analysis] Processing: {base_name}", flush=True)
     
     try:
-        xmap = io.load(file_path)
-        df = pd.read_csv(file_path, sep=r'\s+', comment='#', header=None, engine='python')
-        iq_raw = df[5].values
-        ci_raw = df[6].values
-        phase_raw = df[7].values
+        xmap, table, xstep = load_ebsd(file_path)
+        iq_raw, ci_raw, phase_raw = table[:, 5], table[:, 6], table[:, 7]
+        phase_mapping = resolve_phases(file_path, phase_raw)
     except Exception as e:
         print(f"Error loading {file_path}: {e}")
         return None
         
     # Grid handling
-    xstep = 0.05
-    with open(file_path, 'r') as f:
-        for line in f:
-            if 'XSTEP' in line.upper():
-                xstep = float(line.split(':')[1].strip())
-                break
-                
     expected_size = xmap.shape[0] * xmap.shape[1]
     
     if xmap.size != expected_size:
@@ -68,33 +62,17 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
         rotations_map = xmap.rotations.reshape(rows, cols).data
 
     smoothed_iq_2d = median_filter(raw_iq_2d, size=3)
+    valid_scan_mask = raw_iq_2d >= 0
     
-    # 2. Thresholding
+    # Shared phase-aware IQ split; source IDs are never analysis labels.
+    phases, iq_t1, phase_audit = split_wc_co(smoothed_iq_2d, raw_phases_2d, phase_mapping, co_wt, valid_scan_mask)
+    valid_scan_mask &= phases != 0
+    phase_audit['source_excluded_points'] = int(np.sum(iq_raw < 0))
+    phase_audit['source_total_points'] = int(len(iq_raw))
+    phase_audit['file_integrity'] = xmap._file_integrity
+    included_pixels = max(1, int(np.sum(valid_scan_mask)))
     try:
         iq_flat = smoothed_iq_2d.ravel()
-        phase_flat = raw_phases_2d.ravel()
-        total_pixels = len(iq_flat)
-        v_gamma_detected = (np.sum(phase_flat == 3) / total_pixels) if total_pixels > 0 else 0
-        
-        if co_wt is not None and co_wt != -1:
-            wc_wt = max(0, 100.0 - co_wt)
-            vol_co = co_wt / 8.9
-            vol_wc = wc_wt / 15.63
-            vol_ratio_co = vol_co / (vol_co + vol_wc) if (vol_co + vol_wc) > 0 else 0
-            true_co_vol_frac = vol_ratio_co * (1.0 - v_gamma_detected)
-            target_co_pixels = int(total_pixels * true_co_vol_frac)
-            mask_non_gamma = (phase_flat != 3)
-            iq_non_gamma = iq_flat[mask_non_gamma]
-            percentile = (target_co_pixels / len(iq_non_gamma)) * 100.0 if np.any(mask_non_gamma) else 0
-            iq_t1 = np.percentile(iq_non_gamma, min(max(percentile, 0), 100))
-        else:
-            iq_t1 = threshold_otsu(iq_flat)
-        
-        phase_redefined_2d = raw_phases_2d.copy()
-        phase_redefined_2d[raw_phases_2d != 3] = 1
-        phase_redefined_2d[(smoothed_iq_2d <= iq_t1) & (raw_phases_2d != 3)] = 2
-        phases = phase_redefined_2d
-        
         # --- Threshold Verification Plot (Reference Lines) ---
         print("- Generating Threshold Verification Plot...", flush=True)
         from skimage.filters import threshold_multiotsu
@@ -141,10 +119,14 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
         ax.legend(loc='upper right', fontsize=9)
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f"threshold_check_{base_name}.png"), dpi=150)
+        export_histogram(os.path.join(output_dir, f"threshold_check_{base_name}.png"),
+                         hist_vals, bin_edges, {'smoothed_iq': iq_flat},
+                         {'smoothed_count': smoothed, 'applied_iq_cutoff': iq_t1,
+                          'otsu_iq_cutoff': otsu_t, 'valley_iq_cutoff': valley_t})
         plt.close()
         
     except Exception as e:
-        print(f"Warning: {e}"); phases = raw_phases_2d
+        print(f"Warning: threshold plot unavailable: {e}")
 
     # 3. Grain Segmentation (Original Logic)
     angle_threshold_rad = np.deg2rad(5.0)
@@ -152,10 +134,10 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
     next_grain_id = 0
     
     for p_id in np.unique(phases):
+        if p_id == 0: continue
         mask = (phases == p_id) & (ci_map >= 0.1)
         if not np.any(mask): continue
-        try: symmetry = xmap.phases[int(p_id)].point_group
-        except: symmetry = '6/mmm'
+        symmetry = analysis_symmetry(xmap, phase_mapping, p_id)
         ori_2d = Orientation(rotations_map, symmetry=symmetry)
         y, x = np.meshgrid(np.arange(rows), np.arange(cols), indexing='ij')
         node_indices = y * cols + x
@@ -190,8 +172,10 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
     
     # Phase Map 복구: 보호된 Co는 그대로 유지, 나머지만 인접 단계로 보간
     dilated_phases = phases.copy()
-    to_fill_mask = ~protected_mask
+    to_fill_mask = ~protected_mask & valid_scan_mask
     dilated_phases[to_fill_mask] = phases[index_map[0], index_map[1]][to_fill_mask]
+    dilated_phases[~valid_scan_mask] = 0
+    dilated_grain_ids[~valid_scan_mask] = -1
 
     
     # 5. Boundary & Contiguity (Original N_11/N_12 Logic)
@@ -200,6 +184,8 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
     coco_right = (dilated_phases[:, :-1] == 2) & (dilated_phases[:, 1:] == 2)
     coco_bottom = (dilated_phases[:-1, :] == 2) & (dilated_phases[1:, :] == 2)
     gb_right &= ~coco_right; gb_bottom &= ~coco_bottom
+    gb_right &= valid_scan_mask[:, :-1] & valid_scan_mask[:, 1:]
+    gb_bottom &= valid_scan_mask[:-1, :] & valid_scan_mask[1:, :]
     
     p1_r, p2_r = dilated_phases[:, :-1][gb_right], dilated_phases[:, 1:][gb_right]
     p1_b, p2_b = dilated_phases[:-1, :][gb_bottom], dilated_phases[1:, :][gb_bottom]
@@ -244,10 +230,8 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
     _, u_idx = np.unique(dilated_grain_ids, return_index=True)
     g_phases = dilated_phases.ravel()[u_idx][(dilated_grain_ids.ravel()[u_idx] != -1)] # correct mapping
     # Actually simpler mapping:
-    g_phases = []
-    for uid in p_ids: # This is slow but safe for now, better to use bincount/unique trick
-        g_phases.append(dilated_phases[dilated_grain_ids == uid][0])
-    g_phases = np.array(g_phases)
+    _, first_indices = np.unique(dilated_grain_ids, return_index=True)
+    g_phases = dilated_phases.ravel()[first_indices][mask]
     d_eq = 2.0 * np.sqrt((cts * xstep**2) / np.pi)
     
     gs_wc_n = np.mean(d_eq[g_phases==1]) if np.any(g_phases==1) else 0
@@ -265,7 +249,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
         sd_wc_a = 0
     sd_g_n = np.std(d_eq[g_phases==3], ddof=1) if np.sum(g_phases==3) > 1 else 0
 
-    vol_co = (np.sum(dilated_phases==2)/dilated_phases.size)*100
+    vol_co = (np.sum(dilated_phases==2)/included_pixels)*100
     mfp_l = (gs_wc_a * (vol_co/100)) / ((1 - vol_co/100) * (1 - C_WC_Line)) if (1-vol_co/100)*(1-C_WC_Line)>0 else 0
     mfp_a = (gs_wc_a * (vol_co/100)) / ((1 - vol_co/100) * (1 - C_WC_Area)) if (1-vol_co/100)*(1-C_WC_Area)>0 else 0
 
@@ -321,11 +305,17 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
         
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f"distribution_{base_name}.png"), dpi=150)
+        export_histogram(os.path.join(output_dir, f"distribution_{base_name}.png"),
+                         counts_hist, bins,
+                         {'grain_id': p_ids[g_phases == 1], 'equivalent_diameter_um': wc_sizes,
+                          'area_um2': cts[g_phases == 1] * xstep**2,
+                          'pixel_count': cts[g_phases == 1]},
+                         {'area_weighted_mean_um': gs_wc_a, 'area_weighted_sd_um': sd_wc_a})
         plt.close()
 
     return {
-        "Filename": base_name, "WC_Vol": (np.sum(dilated_phases==1)/dilated_phases.size)*100, 
-        "Co_Vol": vol_co, "Raw_Co": (np.sum(phases==2)/phases.size)*100, "G_Vol": (np.sum(dilated_phases==3)/dilated_phases.size)*100,
+        "PhaseAudit": phase_audit, "Filename": base_name, "WC_Vol": (np.sum(dilated_phases==1)/included_pixels)*100,
+        "Co_Vol": vol_co, "Raw_Co": (np.sum(phases==2)/included_pixels)*100, "G_Vol": (np.sum(dilated_phases==3)/included_pixels)*100,
         "WC_N": gs_wc_n, "WC_A": gs_wc_a, "SD_WC_N": sd_wc_n, "SD_WC_A": sd_wc_a,
         "WC_D10": d10_wc, "WC_D50": d50_wc, "WC_D90": d90_wc,
         "G_N": gs_g_n, "G_A": gs_g_a, "SD_G_N": sd_g_n,

@@ -20,6 +20,8 @@ dist-ssr/
 *.local
 .temp_ebsd/
 python/.temp_ebsd/
+python/.numba_cache/
+analysis_results/
 python/*.png
 python/*.txt
 pdf_text.md
@@ -56,3 +58,7 @@ env/
 *.sln
 *.sw?
 
+
+# Generated release packages
+distribution/
+update-manifest.json

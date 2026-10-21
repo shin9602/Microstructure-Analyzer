@@ -197,6 +197,16 @@ def write_ang(
 ) -> None:
     """Write TSL-style .ang that mtex_hex / OIM can read."""
     out_path = Path(out_path)
+    source_record_count = len(data)
+    # Some OSC buffers end with unused records, all located at the origin.
+    # These are storage padding, not extra measurements in the first scan row.
+    padding = (np.all(data[:, 3:5] == 0, axis=1) & (data[:, 5] == -1)
+               & (data[:, 6] == -1) & (data[:, 7] == 0))
+    occupied = np.flatnonzero(~padding)
+    if not len(occupied):
+        raise ValueError("OSC contains no measurement records")
+    data = data[:int(occupied[-1]) + 1]
+    padding_record_count = source_record_count - len(data)
     if phases is None:
         phases = _guess_phases(data)
     # normalize legacy (id, name) tuples
@@ -215,6 +225,12 @@ def write_ang(
     xs, ys = data[:, 3], data[:, 4]
     ncols_odd = int(round((xs.max() - xs.min()) / xstep)) + 1 if xstep else 0
     nrows = int(round((ys.max() - ys.min()) / ystep)) + 1 if ystep else 0
+    # OSC variants can have equal-length staggered rows. Preserve their actual
+    # row counts so a valid conversion is not reported as an incomplete scan.
+    _, row_counts = np.unique(ys, return_counts=True)
+    ncols_odd = int(np.median(row_counts[::2]))
+    ncols_even = int(np.median(row_counts[1::2])) if len(row_counts) > 1 else ncols_odd
+    nrows = len(row_counts)
 
     lines: list[str] = [
         "# Converted from EDAX/TSL .osc (osc_to_ang.py / MTEX oscData port)",
@@ -242,8 +258,11 @@ def write_ang(
         f"# XSTEP: {xstep:.6f}",
         f"# YSTEP: {ystep:.6f}",
         f"# NCOLS_ODD: {ncols_odd}",
-        f"# NCOLS_EVEN: {max(ncols_odd - 1, 0)}",
+        f"# NCOLS_EVEN: {ncols_even}",
         f"# NROWS: {nrows}",
+        f"# SOURCE_RECORD_COUNT: {source_record_count}",
+        f"# PADDING_RECORD_COUNT: {padding_record_count}",
+        f"# GRID_ROW_COUNTS: {' '.join(str(int(count)) for count in row_counts)}",
         "#",
         "# OPERATOR:      ",
         "# SAMPLEID:      ",

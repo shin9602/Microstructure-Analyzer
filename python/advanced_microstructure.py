@@ -23,6 +23,9 @@ from skimage.filters import threshold_otsu
 from skimage.measure import regionprops
 import json
 
+from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry
+from ebsd_exports import export_histogram, mesh_data_frame
+
 warnings.filterwarnings('ignore')
 
 def _get_cmap(name):
@@ -39,11 +42,9 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
     
     # 1. Load Data
     try:
-        xmap = io.load(file_path)
-        df = pd.read_csv(file_path, sep=r'\s+', comment='#', header=None, engine='python')
-        iq_raw = df[5].values
-        ci_raw = df[6].values
-        phase_raw = df[7].values
+        xmap, table, xstep = load_ebsd(file_path)
+        iq_raw, ci_raw, phase_raw = table[:, 5], table[:, 6], table[:, 7]
+        phase_mapping = resolve_phases(file_path, phase_raw)
     except Exception as e:
         print(f"Error loading {file_path}: {e}")
         return None
@@ -51,18 +52,11 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
     # Grid check & conversion
     rows_orig, cols_orig = xmap.shape if xmap.ndim == 2 else (0, 0)
     expected_size = rows_orig * cols_orig
-    xstep = 0.05
-    with open(file_path, 'r') as f:
-        for line in f:
-            if 'XSTEP' in line.upper():
-                xstep = float(line.split(':')[1].strip())
-                break
-                
     if xmap.size != expected_size:
         print("- Hexagonal Grid Detected! Converting to Square Grid...")
         from scipy.spatial import cKDTree
-        xi = np.linspace(xmap.x.min(), xmap.x.max(), cols_orig)
-        yi = np.linspace(xmap.y.min(), xmap.y.max(), int(cols_orig * (xmap.y.max()-xmap.y.min())/(xmap.x.max()-xmap.x.min())))
+        xi = np.arange(xmap.x.min(), xmap.x.max() + xstep * 0.5, xstep)
+        yi = np.arange(xmap.y.min(), xmap.y.max() + xstep * 0.5, xstep)
         X, Y = np.meshgrid(xi, yi); rows, cols = X.shape; num_pixels = rows * cols
         dist, idx = cKDTree(np.c_[xmap.x, xmap.y]).query(np.c_[X.ravel(), Y.ravel()], k=1)
         valid_scan_mask = (dist <= xstep * 1.5).reshape(rows, cols)
@@ -78,26 +72,13 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
 
     print("- 전처리 및 위상 재정의 중...")
     smoothed_iq_2d = median_filter(raw_iq_2d, size=3)
+    valid_scan_mask &= raw_iq_2d >= 0
     
-    # Thresholding logic
-    try:
-        iq_flat = smoothed_iq_2d.ravel(); phase_flat = raw_phases_2d.ravel()
-        if co_wt is not None and co_wt != -1:
-            total_pixels = len(iq_flat); v_gamma = np.sum(phase_flat == 3) / total_pixels
-            wc_wt = 100.0 - co_wt; vol_ratio_co = (co_wt / 8.9) / ((co_wt/8.9) + (wc_wt/15.63))
-            target_frac = vol_ratio_co * (1.0 - v_gamma)
-            iq_t1 = np.percentile(iq_flat[phase_flat != 3], min(max(target_frac*100, 0), 100))
-        else:
-            iq_t1 = threshold_otsu(iq_flat)
-        phases = raw_phases_2d.copy(); phases[raw_phases_2d != 3] = 1; phases[(smoothed_iq_2d <= iq_t1) & (raw_phases_2d != 3)] = 2
-    except: phases = raw_phases_2d
-    
+    phases, iq_t1, phase_audit = split_wc_co(smoothed_iq_2d, raw_phases_2d, phase_mapping, co_wt, valid_scan_mask)
+    valid_scan_mask &= phases != 0
     mask_wc = (phases == 1) & (ci_map >= 0.1)
-    try:
-        raw_sym = xmap.phases[1].point_group
-        xmap_symmetry = Symmetry(raw_sym) if isinstance(raw_sym, str) else raw_sym
-    except: xmap_symmetry = Symmetry('6/mmm')
-        
+    xmap_symmetry = analysis_symmetry(xmap, phase_mapping, 1)
+
     ori_wc = Orientation(rotations_map, symmetry=xmap_symmetry)
     
     # Grain Identification
@@ -183,7 +164,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
             return 1.0
         # 랜덤 서브샘플링 (KDE는 대표 샘플로도 충분히 정확)
         if len(vectors_xyz) > max_samples:
-            idx = np.random.choice(len(vectors_xyz), max_samples, replace=False)
+            idx = np.random.default_rng(0).choice(len(vectors_xyz), max_samples, replace=False)
             vectors_xyz = vectors_xyz[idx]
         bw = np.deg2rad(sigma_deg)
         kde = gaussian_kde(vectors_xyz.T, bw_method=bw)
@@ -196,7 +177,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
         mean_d = np.mean(density)
         return float((density / mean_d).max()) if mean_d > 1e-12 else 1.0
 
-    max_mrd_ipf, max_pf, t_idx = 1.0, [1.0, 1.0, 1.0], 1.0
+    max_mrd_ipf, max_pf, t_idx = 1.0, [1.0, 1.0, 1.0], None
     sigma_deg = 7.5
 
     try:
@@ -224,7 +205,9 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
         # IPF Z Density Map
         fig_ipf = plt.figure(figsize=(10, 8), dpi=300)
         ax_ipf = fig_ipf.add_subplot(111, projection='ipf', symmetry=xmap_symmetry)
-        p_dens = ax_ipf.pole_density_function(c_dirs, sigma=sigma_deg)
+        ax_ipf.pole_density_function(c_dirs, sigma=sigma_deg, colorbar=False)
+        p_dens = ax_ipf.collections[-1]
+        mesh_data_frame(p_dens, 'IPF Z').to_csv(os.path.join(output_dir, f"ADV_00_IPF_Texture_Density_{base_name}.csv"), index=False, encoding='utf-8-sig')
         ax_ipf.set_title(f"IPF Z Texture Density (Max MRD: {max_mrd_ipf:.2f})", fontweight='bold')
         fig_ipf.colorbar(p_dens, ax=ax_ipf, fraction=0.046, pad=0.04)
         plt.tight_layout()
@@ -233,14 +216,18 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
 
         # Pole Figures
         fig_pf = plt.figure(figsize=(24, 8), dpi=300)
+        pole_data = []
         for i, (cdir, title) in enumerate(zip([Vector3d.zvector(), Vector3d.xvector(), Vector3d.yvector()],
                                                ["[0001] Basal PF", "[2-1-10] Prismatic PF", "[10-10] Prismatic PF"])):
             ax_p = fig_pf.add_subplot(1, 3, i+1, projection='stereographic')
-            p_obj = ax_p.pole_density_function(ori_wc[mask_wc] * cdir, sigma=sigma_deg)
+            ax_p.pole_density_function(ori_wc[mask_wc] * cdir, sigma=sigma_deg, colorbar=False)
+            p_obj = ax_p.collections[-1]
+            pole_data.append(mesh_data_frame(p_obj, title))
             ax_p.set_title(f"{title}\n(Max MRD: {max_pf[i]:.2f})", fontweight='bold', fontsize=16)
             fig_pf.colorbar(p_obj, ax=ax_p, fraction=0.046, pad=0.04)
         plt.tight_layout(pad=6.0)
         plt.savefig(os.path.join(output_dir, f"ADV_00_Pole_Figure_{base_name}.png"), dpi=300)
+        pd.concat(pole_data, ignore_index=True).to_csv(os.path.join(output_dir, f"ADV_00_Pole_Figure_{base_name}.csv"), index=False, encoding='utf-8-sig')
         plt.close()
     except Exception as e:
         print(f"Map Error: {e}")
@@ -249,6 +236,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
     # Graphs
     def save_dist(data, bins, range, title, xlabel, color, out_path, highlight=None):
         fig, ax = plt.subplots(figsize=(10, 6), dpi=300); c, b = np.histogram(data, bins=bins, range=range); bc = 0.5*(b[:-1]+b[1:])
+        export_histogram(out_path, c, b, {'value': np.asarray(data), 'quantity': xlabel}, {'quantity': xlabel})
         ax.plot(bc, c, color=color, marker='o', markersize=4, linewidth=1.5)
         if highlight: ax.axvspan(highlight[0], highlight[1], color='red', alpha=0.2)
         ax.set_title(title, fontweight='bold'); ax.set_xlabel(xlabel); ax.set_ylabel('Frequency'); ax.grid(True, alpha=0.3)
@@ -269,7 +257,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
     is_b = (rgb_wc[:,2] > rgb_wc[:,0]) & (rgb_wc[:,2] > rgb_wc[:,1])
 
     return {
-        "Filename": base_name, "Grains": len(el_list), "S2": s2_frac,
+        "PhaseAudit": phase_audit, "Filename": base_name, "Grains": len(el_list), "S2": s2_frac,
         "GS_Mean_A": gs_mean_a, "D10": d10, "D50": d50, "D90": d90,
         "El": np.mean(el_list) if el_list else 0, "El_Std": np.std(el_list) if el_list else 0,
         "Ci": np.mean(circ_list) if circ_list else 0, "Ci_Std": np.std(circ_list) if circ_list else 0,
@@ -300,7 +288,7 @@ if __name__ == "__main__":
         with open(os.path.join(search_dir, "Advanced_WC_Microstructure_Report.txt"), 'w', encoding='utf-8') as f:
             for r in all_rep:
                 f.write(f"▶ 파일명: {r['Filename']}\n   [집합조직 정량화 - MRD]\n")
-                f.write(f"     - IPF Z Density Max: {r['Mud_IPF']:.2f} (Index: {r['T_Idx']:.2f})\n")
+                f.write(f"     - IPF Z Density Max: {r['Mud_IPF']:.2f} (T-Index: not computed)\n")
                 f.write(f"     - [0001] Basal PF Max: {r['Mud_P1']:.2f}\n")
                 f.write(f"     - [2-1-10] Prismatic PF Max: {r['Mud_P2']:.2f}\n")
                 f.write(f"     - [10-10] Prismatic PF Max: {r['Mud_P3']:.2f}\n\n")
