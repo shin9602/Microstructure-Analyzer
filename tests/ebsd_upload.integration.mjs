@@ -126,7 +126,8 @@ try {
     assert.equal((await uploaded.json()).file, name);
     assert.equal((await fsp.stat(path.join(runtime, 'uploads', actualSession, name))).size, size);
     console.log('PASS: actual OSC uploaded without conversion in the HTTP request:', size, 'bytes');
-    const text = await (await fetch(base + '/api/run-ebsd?temp=1&session=' + actualSession + '&co_wt=9')).text();
+    const coWeight = process.argv[3] ?? '9';
+    const text = await (await fetch(base + '/api/run-ebsd?temp=1&session=' + actualSession + '&co_wt=' + encodeURIComponent(coWeight))).text();
     const events = text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)));
     const result = events.find(event => event.type === 'result_pack');
     assert.ok(result, text.slice(-2500));
@@ -135,10 +136,10 @@ try {
     assert.ok(result.samples[0].basic && result.samples[0].advanced);
     assert.equal(result.samples[0].basic.PhaseAudit.gamma_mode, 'all_other');
     const audit = result.samples[0].basic.PhaseAudit;
-    assert.equal(audit.classification_order, 'WC -> non-WC IQ Co -> remaining gamma');
+    assert.equal(audit.classification_order, 'Whole-map IQ Co -> remaining source WC / gamma');
     assert.ok(Math.abs(audit.co_percent_before_cleanup - audit.co_target_percent_of_total) < 0.01);
     assert.equal(result.samples[0].advanced.PhaseAudit.classification_order, audit.classification_order);
-    console.log('PASS: basic/advanced use WC-first; Co area matches the whole-map target:', audit.co_percent_before_cleanup);
+    console.log('PASS: basic/advanced use whole-map IQ Co first; Co area matches the whole-map target:', audit.co_percent_before_cleanup);
     const image = result.samples[0].images.find(name => name.includes('IQ_MAP_'));
     assert.ok(image);
     const png = await fetch(base + '/api/ebsd-results/' + encodeURIComponent(image));

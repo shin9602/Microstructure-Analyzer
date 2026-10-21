@@ -260,7 +260,7 @@ def resolve_phases(path, raw_phases, gamma_mode='all_other'):
     active = {int(pid) for pid in np.unique(raw_phases) if pid > 0}
     if gamma_mode == 'all_other':
         # All non-WC definitions are provisional gamma, including FCC/HCP Co.
-        # Valid unindexed sites also enter the non-WC IQ pool in split_wc_co.
+        # Co is assigned first from all valid scan sites in split_wc_co.
         for pid in active | set(definitions):
             if pid > 0 and roles.get(pid) != 'WC':
                 roles[pid] = 'Gamma'
@@ -283,7 +283,7 @@ def resolve_phases(path, raw_phases, gamma_mode='all_other'):
 
 
 def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode='all_other'):
-    """Default: preserve source WC, split non-WC into Co/gamma by IQ.
+    """Default: assign Co by whole-map IQ, then classify remaining WC/gamma.
 
     Named mode retains the historical gamma-first WC/Co split.
     """
@@ -291,10 +291,10 @@ def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode
     iq = np.asarray(iq)
     valid = np.ones(iq.shape, dtype=bool) if valid_mask is None else np.asarray(valid_mask, dtype=bool)
     valid = valid & (iq >= 0)
-    wc_first = gamma_mode == 'all_other'
+    co_first = gamma_mode == 'all_other'
     gamma = np.isin(raw_phases, mapping["Gamma"]) & valid
     wc = np.isin(raw_phases, mapping['WC']) & valid
-    candidate = (~wc if wc_first else ~gamma) & valid
+    candidate = valid if co_first else ~gamma & valid
     values = iq[candidate]
     if not np.all(np.isfinite(values)):
         raise ValueError("Non-finite IQ values in WC/Co region")
@@ -307,21 +307,18 @@ def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode
         wc_volume = (100.0 - co_wt) / 15.63
         ratio = co_volume / (co_volume + wc_volume)
     phases = np.zeros(iq.shape, dtype=np.int32)
-    if wc_first:
+    if co_first:
+        phases[valid] = 3
         phases[wc] = 1
-        phases[candidate] = 3
     else:
         phases[gamma] = 3
         phases[candidate] = 1
-    requested_count = int(np.sum(valid) * ratio) if composition and wc_first else None
-    if requested_count is not None and requested_count > values.size:
-        raise ValueError('입력한 Co 함량을 배정하기에 WC 외 영역이 부족합니다. Co 함량과 원본 WC 인식을 확인하세요.')
     if not values.size:
         threshold = None
     elif composition:
         # Rank by IQ to meet the target even when many pixels share an IQ.
         # Stable ordering makes ties reproducible within the selected IQ pool.
-        count = requested_count if wc_first else int(values.size * ratio)
+        count = int(values.size * ratio)
         order = np.argsort(values, kind="stable")
         indices = np.flatnonzero(candidate)
         phases.ravel()[indices[order[:count]]] = 2
@@ -331,13 +328,13 @@ def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode
         phases[candidate & (iq <= threshold)] = 2
     audit = {
         'gamma_mode': gamma_mode,
-        'classification_order': 'WC -> non-WC IQ Co -> remaining gamma' if wc_first else 'Named gamma -> remaining IQ WC/Co',
+        'classification_order': 'Whole-map IQ Co -> remaining source WC / gamma' if co_first else 'Named gamma -> remaining IQ WC/Co',
         'gamma_symmetry_model': 'Unified FCC (432), original orientations' if gamma_mode == 'all_other' else 'Original source phases and symmetries',
         "source_phase_ids": mapping,
         "method": "Co wt% + IQ ranking" if composition else "IQ Otsu",
         "co_wt_percent": co_wt if composition else None,
-        "co_target_percent_of_non_gamma": ratio * 100 if ratio is not None and not wc_first else None,
-        "co_target_percent_of_total": ratio * 100 if ratio is not None and wc_first else None,
+        "co_target_percent_of_non_gamma": ratio * 100 if ratio is not None and not co_first else None,
+        "co_target_percent_of_total": ratio * 100 if ratio is not None and co_first else None,
         "iq_threshold": threshold,
         "wc_percent_before_cleanup": float(np.mean(phases == 1) * 100),
         "co_percent_before_cleanup": float(np.mean(phases == 2) * 100),
