@@ -9,8 +9,32 @@ import os from 'os'
 import { fileURLToPath } from 'url'
 import tailwindcss from 'tailwindcss'
 import autoprefixer from 'autoprefixer'
+import { createHash, randomUUID } from 'node:crypto'
+import { finished } from 'node:stream/promises'
+import type { IncomingMessage } from 'node:http'
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url))
+const ebsdRuntimeRoot = path.join(os.tmpdir(), 'AutoCalculator', 'ebsd',
+  createHash('sha256').update(path.resolve(projectRoot).toLowerCase()).digest('hex').slice(0, 16))
+const ebsdResultsRoot = path.join(ebsdRuntimeRoot, 'results')
+
+async function saveUpload(req: IncomingMessage, destination: string) {
+  const output = fs.createWriteStream(destination, { flags: 'wx' })
+  const complete = finished(output)
+  req.once('aborted', () => output.destroy(new Error('업로드 연결이 중단됐습니다.')))
+  req.once('error', error => output.destroy(error))
+  req.pipe(output)
+  try {
+    await complete
+    if (!req.complete) throw new Error('파일 업로드가 완료되지 않았습니다.')
+  } catch (error) {
+    // Do not destroy the HTTP request on a disk error: return JSON to the client.
+    req.unpipe(output)
+    req.resume()
+    output.destroy()
+    throw error
+  }
+}
 
 // version.txt is what START_HERE.bat updates, so the UI label must follow it.
 function readAppVersion(): string {
@@ -56,83 +80,87 @@ function resolvePythonCommand(): string {
 function spawnPythonProcess(pythonCmd: string, args: string[], cwd: string) {
   return spawn(pythonCmd, ['-X', 'utf8', '-u', ...args], {
     cwd, windowsHide: true,
-    env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', MPLBACKEND: 'Agg' },
+    env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', MPLBACKEND: 'Agg', NUMBA_CACHE_DIR: path.join(ebsdRuntimeRoot, 'numba') },
   })
 }
 
 function pythonRunnerPlugin(): Plugin {
+  const uploads = new Map<string, string>()
+  const activeUploads = new Set<string>()
+  const removeUpload = async (session: string) => {
+    const directory = uploads.get(session)
+    if (!directory || activeUploads.has(session)) return
+    const allowedRoot = path.resolve(ebsdRuntimeRoot, 'uploads') + path.sep
+    if (!path.resolve(directory).startsWith(allowedRoot)) throw new Error('Invalid upload cleanup path')
+    await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 })
+    uploads.delete(session)
+  }
   return {
     name: 'python-runner',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         if (req.url && req.url.startsWith('/api/clear-ebsd-temp')) {
-            const tempPath = path.resolve(projectRoot, 'python', '.temp_ebsd');
-            if (fs.existsSync(tempPath)) {
-              const files = fs.readdirSync(tempPath);
-              for (const file of files) {
-                try {
-                  fs.rmSync(path.join(tempPath, file), { recursive: true, force: true });
-                } catch (err) {
-                  console.error(`Failed to remove ${file}:`, err);
-                }
-              }
-            } else {
-              fs.mkdirSync(tempPath, { recursive: true });
+            res.setHeader('Content-Type', 'application/json; charset=utf-8')
+            try {
+              const previous = new URL(req.url, 'http://localhost').searchParams.get('previous_session')
+              if (previous) void removeUpload(previous).catch(error => console.warn('Upload cleanup:', error.message))
+              const session = randomUUID()
+              const directory = path.join(ebsdRuntimeRoot, 'uploads', session)
+              fs.mkdirSync(directory, { recursive: true })
+              uploads.set(session, directory)
+              res.end(JSON.stringify({ success: true, session }))
+            } catch (error) {
+              res.statusCode = 500
+              res.end(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }))
             }
-            res.end(JSON.stringify({ success: true }));
             return;
         }
 
         if (req.url && req.url.startsWith('/api/upload-ebsd')) {
            const urlObj = new URL(req.url, 'http://localhost');
            const filename = urlObj.searchParams.get('filename');
+           const session = urlObj.searchParams.get('session') || ''
+           const tempPath = uploads.get(session)
+           res.setHeader('Content-Type', 'application/json; charset=utf-8')
            if (!filename || path.basename(filename) !== filename || !/\.(ang|osc)$/i.test(filename)) {
-               res.end('No filename');
+               res.statusCode = 400
+               res.end(JSON.stringify({ success: false, error: 'ANG 또는 OSC 파일 이름을 확인하세요.' }));
+               req.resume()
                return;
            }
-           
-           const tempPath = path.resolve(projectRoot, 'python', '.temp_ebsd');
-           if (!fs.existsSync(tempPath)) fs.mkdirSync(tempPath, { recursive: true });
-           
-           const destPath = path.join(tempPath, filename);
-           const writeStream = fs.createWriteStream(destPath);
-           req.pipe(writeStream);
-           writeStream.on('error', (error) => { res.statusCode = 500; res.end(JSON.stringify({ success: false, error: error.message })); });
-           writeStream.on('finish', () => {
-             const lower = filename.toLowerCase();
-             if (!lower.endsWith('.osc')) {
-               res.end(JSON.stringify({ success: true, file: filename }));
-               return;
-             }
-             // Auto-convert EDAX/TSL .osc → .ang (MTEX oscData port)
-             const angName = filename.replace(/\.osc$/i, '.ang');
-             const angPath = path.join(tempPath, angName);
-             const converter = path.join('python', 'osc_to_ang.py');
-             const tempRel = path.join('python', '.temp_ebsd');
-             const args = [
-               converter,
-               path.join(tempRel, filename),
-               '-o',
-               path.join(tempRel, angName),
-             ];
-             const py = spawnPythonProcess(resolvePythonCommand(), args, projectRoot);
-             let err = '';
-             py.stderr.on('data', (d) => { err += String(d); });
-             py.on('close', (code) => {
-               if (code !== 0 || !fs.existsSync(angPath)) {
-                 res.statusCode = 500;
-                 res.end(JSON.stringify({ success: false, error: err || `osc_to_ang exit ${code}` }));
-                 return;
+           if (!tempPath || activeUploads.has(session)) {
+             res.statusCode = 400
+             res.end(JSON.stringify({ success: false, error: '업로드 준비가 만료됐습니다. 화면을 새로고침하고 다시 실행하세요.' }))
+             req.resume()
+             return
+           }
+           const partial = path.join(tempPath, randomUUID() + '.upload')
+           void (async () => {
+             try {
+               await saveUpload(req, partial)
+               if ((await fs.promises.stat(partial)).size === 0) {
+                 res.statusCode = 400
+                 throw new Error('파일이 비어 있습니다.')
                }
-               res.end(JSON.stringify({ success: true, file: angName, convertedFrom: filename }));
-             });
-           });
+               await fs.promises.rename(partial, path.join(tempPath, filename))
+               // Conversion belongs to the analysis process, not the upload request.
+               if (!res.destroyed) res.end(JSON.stringify({ success: true, file: filename }))
+             } catch (error) {
+               req.resume()
+               if (!res.destroyed && !res.writableEnded) {
+                 if (res.statusCode === 200) res.statusCode = 500
+                 res.end(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }))
+               }
+             } finally {
+               await fs.promises.rm(partial, { force: true }).catch(() => undefined)
+             }
+           })()
            return;
         }
 
         if (req.url && req.url.startsWith('/api/ebsd-results/')) {
            const requestedFile = decodeURIComponent(req.url.replace('/api/ebsd-results/', '').split('?')[0]);
-           const resultsRoot = path.resolve(projectRoot, 'python', '.temp_ebsd');
+           const resultsRoot = ebsdResultsRoot;
            const filePath = path.resolve(resultsRoot, requestedFile);
            if (!filePath.startsWith(resultsRoot + path.sep)) { res.statusCode = 403; res.end('Invalid result path'); return; }
            if (!fs.existsSync(filePath)) {
@@ -151,6 +179,8 @@ function pythonRunnerPlugin(): Plugin {
            res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(requestedFile)}"; filename*=UTF-8''${encodeURIComponent(requestedFile)}`);
            
            const readStream = fs.createReadStream(filePath);
+           readStream.on('error', () => { if (!res.headersSent) { res.statusCode = 500; res.end('결과 파일을 읽지 못했습니다.'); } else res.destroy(); });
+           res.on('close', () => readStream.destroy());
            readStream.pipe(res);
            return;
         }
@@ -165,6 +195,14 @@ function pythonRunnerPlugin(): Plugin {
           const coWt = urlObj.searchParams.get('co_wt')
           const compMap = urlObj.searchParams.get('comp_map')
           const gammaMode = urlObj.searchParams.get('gamma_mode') ?? 'all_other'
+          const session = urlObj.searchParams.get('session') || ''
+          const uploadDirectory = uploads.get(session)
+          if (useTemp && (!uploadDirectory || activeUploads.has(session))) {
+            res.write(`data: ${JSON.stringify({ type: 'error', message: '업로드 준비가 만료됐거나 이미 분석 중입니다. 파일을 다시 선택하고 실행하세요.' })}\n\n`)
+            res.write(`data: ${JSON.stringify({ type: 'done', code: 2 })}\n\n`)
+            res.end()
+            return
+          }
           if (!['all_other', 'named'].includes(gammaMode)) {
             res.write(`data: ${JSON.stringify({ type: 'error', message: '지원하지 않는 gamma상 분석 모드입니다.' })}\n\n`)
             res.write(`data: ${JSON.stringify({ type: 'done', code: 2 })}\n\n`)
@@ -175,7 +213,6 @@ function pythonRunnerPlugin(): Plugin {
           const scriptName = 'run_ebsd.py'
           const pyPath = path.resolve(projectRoot, 'python', scriptName)
           const scriptRelPath = path.join('python', scriptName)
-          const tempRelPath = path.join('python', '.temp_ebsd')
 
           if (!fs.existsSync(pyPath)) {
             res.write(`data: ${JSON.stringify({ type: 'error', message: `Python script not found: ${pyPath}` })}\n\n`)
@@ -186,11 +223,18 @@ function pythonRunnerPlugin(): Plugin {
           
           res.write(`data: ${JSON.stringify({ type: 'info', message: `Starting Python Analyzer (${scriptName})...` })}\n\n`)
           
-          // Use relative paths + cwd to avoid Windows Korean-path encoding issues in Python argv
-          const args = [scriptRelPath, '--output', tempRelPath]
+          try { fs.mkdirSync(ebsdResultsRoot, { recursive: true }) }
+          catch (error) {
+            res.write(`data: ${JSON.stringify({ type: 'error', message: error instanceof Error ? error.message : String(error) })}\n\n`)
+            res.write(`data: ${JSON.stringify({ type: 'done', code: 2 })}\n\n`)
+            res.end()
+            return
+          }
+          const args = [scriptRelPath, '--output', ebsdResultsRoot]
           args.push('--gamma-mode', gammaMode)
           if (useTemp) {
-              args.push('--uploaded', tempRelPath)
+              args.push('--uploaded', uploadDirectory!)
+              activeUploads.add(session)
               res.write(`data: ${JSON.stringify({ type: 'info', message: 'Using uploaded files...' })}\n\n`)
           } else {
               res.write(`data: ${JSON.stringify({ type: 'warning', message: 'PLEASE CHECK YOUR TASKBAR FOR THE FOLDER SELECTION WINDOW! (tkinter window)' })}\n\n`)
@@ -236,6 +280,10 @@ function pythonRunnerPlugin(): Plugin {
           })
           pythonProcess.on('close', (code) => {
             finished = true
+            if (useTemp) {
+              activeUploads.delete(session)
+              void removeUpload(session).catch(error => console.warn('Upload cleanup:', error.message))
+            }
             pending += decoder.end()
             line(pending)
             if (code === 0 && !receivedResults) send({ type: 'error', message: '분석 결과가 생성되지 않았습니다.' })
@@ -260,8 +308,11 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(readAppVersion()),
   },
-  // Store Vite cache in system temp dir to avoid OneDrive EPERM errors
-  cacheDir: path.join(os.tmpdir(), 'autocalculator-vite-cache'),
+  // Keep each installation's cache outside OneDrive and separate from others.
+  cacheDir: path.join(ebsdRuntimeRoot, 'vite-cache'),
+  server: {
+    watch: { ignored: ['**/.temp_ebsd/**', '**/analysis_results/**', '**/distribution/**', '**/dist/**', '**/_update_temp/**', '**/_tools/**', '**/__pycache__/**', '**/.numba_cache/**', '**/*.osc', '**/*.ang'] },
+  },
   css: {
     postcss: {
       plugins: [

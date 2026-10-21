@@ -41,6 +41,7 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
   const [progressPct, setProgressPct] = useState<number>(0);
   const uploadAbort = useRef<AbortController | null>(null);
   const streamRef = useRef<EventSource | null>(null);
+  const uploadSession = useRef<string | null>(null);
   useEffect(() => () => { uploadAbort.current?.abort(); streamRef.current?.close(); }, []);
 
   const stopAnalysis = () => {
@@ -69,25 +70,30 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
     setProgressPct(0);
     
     let useTemp = false;
+    let session: string | null = null;
     try {
       if (files.length > 0) {
         useTemp = true;
-        setLogs(prev => [...prev, { type: 'info', message: 'Preparing temporary context...' }]);
+        setLogs(prev => [...prev, { type: 'info', message: '업로드 준비 중...' }]);
         
-        const clearRes = await fetch('/api/clear-ebsd-temp', { signal: controller.signal });
-        if (!clearRes.ok) throw new Error('Failed to clear temp directory');
+        const previous = uploadSession.current ? `?previous_session=${encodeURIComponent(uploadSession.current)}` : '';
+        const clearRes = await fetch(`/api/clear-ebsd-temp${previous}`, { signal: controller.signal });
+        const prepared = await clearRes.json().catch(() => ({} as { success?: boolean; session?: string; error?: string }));
+        if (!clearRes.ok || !prepared.success || !prepared.session) throw new Error(prepared.error || '업로드 폴더를 준비하지 못했습니다.');
+        session = prepared.session;
+        uploadSession.current = session;
 
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
-          setLogs(prev => [...prev, { type: 'info', message: `Uploading ${file.name} (${i + 1}/${files.length})...` }]);
-          const up = await fetch(`/api/upload-ebsd?filename=${encodeURIComponent(file.name)}`, {
+          setLogs(prev => [...prev, { type: 'info', message: `업로드 중: ${file.name} (${i + 1}/${files.length})...` }]);
+          const up = await fetch(`/api/upload-ebsd?filename=${encodeURIComponent(file.name)}&session=${encodeURIComponent(session!)}`, {
             method: 'POST',
             signal: controller.signal,
             body: file
           });
           const body = await up.json().catch(() => ({} as { success?: boolean; file?: string; convertedFrom?: string; error?: string }));
           if (!up.ok || body.success === false) {
-            throw new Error(body.error || `Upload failed: ${file.name}`);
+            throw new Error(body.error || `파일 업로드 실패: ${file.name}`);
           }
           if (body.convertedFrom) {
             setLogs(prev => [...prev, { type: 'success', message: `Converted ${body.convertedFrom} → ${body.file}` }]);
@@ -99,7 +105,7 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
       
       const params = new URLSearchParams();
       params.append('gamma_mode', gammaMode);
-      if (useTemp) params.append('temp', '1');
+      if (useTemp && session) { params.append('temp', '1'); params.append('session', session); }
       if (compositionMode) {
         params.append('co_wt', coWt.toString());
         params.append('comp_map', JSON.stringify(remapCompMapKeys(fileConfigs)));
@@ -146,7 +152,12 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
         setLogs(prev => [...prev, { type: 'error', message: 'Connection lost or server error.' }]);
       };
     } catch (error: unknown) {
-      if (!controller.signal.aborted) setLogs(prev => [...prev, { type: 'error', message: `Failed: ${error instanceof Error ? error.message : String(error)}` }]);
+      if (!controller.signal.aborted) {
+        const detail = error instanceof TypeError && /fetch/i.test(error.message)
+          ? '서버와 연결이 끊겼습니다. 프로그램 실행 창을 확인하고 파일을 다시 선택해 주세요.'
+          : error instanceof Error ? error.message : String(error);
+        setLogs(prev => [...prev, { type: 'error', message: `실패: ${detail}` }]);
+      }
       setIsProcessing(false);
     }
   };
