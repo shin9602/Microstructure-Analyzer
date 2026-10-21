@@ -17,7 +17,8 @@ function Get-FileDigest([string]$Path) {
 $work = Join-Path ([IO.Path]::GetTempPath()) ('ac_boot_' + [guid]::NewGuid().ToString('N'))
 try {
     $here = Split-Path -Parent $env:AC_BOOTSTRAP
-    $root = $here
+    $root = Join-Path $here 'AutoCalculator'
+    if (Test-Path -LiteralPath (Join-Path $here 'START_HERE.bat')) { $root = $here }
     if ($env:AC_BOOTSTRAP_ROOT) { $root = $env:AC_BOOTSTRAP_ROOT }
     $root = [IO.Path]::GetFullPath($root).TrimEnd('\')
     $ready = $false
