@@ -264,8 +264,6 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
     # Save OIM Image
     oim = np.zeros((rows, cols, 3), dtype=np.uint8)
     oim[dilated_phases==1], oim[dilated_phases==2], oim[dilated_phases==3] = [254,0,0], [0,254,0], [0,0,254]
-    unresolved = valid_scan_mask & (dilated_phases != 2) & (dilated_grain_ids < 0)
-    oim[unresolved] = [210, 210, 210]
     boundary_img = np.zeros((rows, cols), dtype=bool)
     boundary_img[:, :-1] |= gb_right; boundary_img[:-1, :] |= gb_bottom
     oim[boundary_img] = [0,0,0]
@@ -273,8 +271,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
     fig, ax = plt.subplots(figsize=(cols/100, rows/100), dpi=200)
     ax.imshow(oim); ax.axis('off')
     legend_elements = [mpatches.Patch(color='#FE0000', label='WC Phase'), mpatches.Patch(color='#00FE00', label='Co Binder'),
-                       mpatches.Patch(color='#0000FE', label='Gamma Phase (\u03B3)'), mpatches.Patch(color='#000000', label='Measured Grain Boundary'),
-                       mpatches.Patch(color='#D2D2D2', label='Unresolved Grain')]
+                       mpatches.Patch(color='#0000FE', label='Gamma Phase (\u03B3)'), mpatches.Patch(color='#000000', label='Measured Grain Boundary')]
     ax.legend(handles=legend_elements, loc='upper right', framealpha=0.8, fontsize=12)
     plt.savefig(os.path.join(output_dir, f"OIM_CLEAN_{base_name}.png"), bbox_inches='tight', pad_inches=0.1)
     plt.close()

@@ -102,7 +102,7 @@ def main():
             if audit["source_phase_ids"]["Other"]:
                 record["warnings"].append(f"기타 원본 상 {audit['source_phase_ids']['Other']}은 감마상으로 지정하지 않고 기존 WC–Co IQ 분할 대상에 포함했습니다.")
             if audit.get('gamma_unassigned_grain_points', 0) or audit.get('wc_unassigned_grain_points', 0):
-                record['warnings'].append(f"입자를 판정하지 못한 WC {audit.get('wc_unassigned_grain_points', 0):,}점, 감마상 {audit.get('gamma_unassigned_grain_points', 0):,}점은 입계 그림에서 회색으로 표시했습니다. 이 영역을 거리로 채우거나 테두리를 입계로 세지 않습니다. 면적분율에는 포함하지만 입도에서는 제외하며, 입도·연결도·평균자유행로는 판정 가능한 영역에 제한된 결과입니다.")
+                record['warnings'].append(f"입자를 판정하지 못한 WC {audit.get('wc_unassigned_grain_points', 0):,}점, gamma상 {audit.get('gamma_unassigned_grain_points', 0):,}점도 해당 상의 색으로 표시했습니다. 면적분율에는 포함하지만 입도에서는 제외하며, 입도·연결도·평균자유행로는 판정 가능한 영역에 제한된 결과입니다.")
             emit({"type": "progress", "message": f"{file.name} · 형상·방위 분석", "percent": int((index + 0.5) / len(inputs) * 100)})
             try:
                 record["advanced"] = process_advanced_wc(str(analysis_file), str(file_out), co_wt, args.gamma_mode)
