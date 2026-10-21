@@ -1622,7 +1622,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
             {/* Copyright Footer */}
             <footer className="bg-white border-t border-slate-200 py-1.5 px-4 flex justify-between items-center text-[9px] text-slate-400 select-none shrink-0 z-20">
                 <div>© 2026 Korloy CVD Development Team.</div>
-                <div className="font-medium">Copyright Shin HyeonTae. All rights reserved.</div>
+                <div className="font-medium">Copy right CVD개발팀 SHT</div>
             </footer>
 
             {omBatchProgress && (

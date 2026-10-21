@@ -1331,7 +1331,7 @@ const App: React.FC<AppProps> = ({ onBack }) => {
         <div className="flex flex-col sm:flex-row justify-between items-center gap-4 text-slate-400 text-[10px] uppercase tracking-wider font-medium">
           <div className="flex flex-col sm:flex-row items-center gap-1 sm:gap-4">
             <p>© 2026 Korloy CVD Development Team.</p>
-            <p>Copyright Shin HyeonTae. All rights reserved.</p>
+            <p className="text-[10px]">Copy right CVD개발팀 SHT</p>
           </div>
           <p>Microstructure Analyzer v5.1</p>
         </div>

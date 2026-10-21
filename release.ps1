@@ -76,7 +76,7 @@ try {
         $download = Join-Path $work 'download-test.zip'
         Invoke-WebRequest "https://github.com/$repo/releases/download/$version/AutoCalculator-$version.zip" -OutFile $download -UseBasicParsing -TimeoutSec 120
         if ((Get-FileDigest $download).ToLowerInvariant() -ne $zipHash) { throw 'Published ZIP download checksum mismatch.' }
-        $latest = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers @{ 'User-Agent'='AutoCalculator-Release-Test' }
+        $latest = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest?verification=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" -Headers @{ 'User-Agent'='AutoCalculator-Release-Test' }
         if ($latest.tag_name -ne $version) { throw "Latest release is $($latest.tag_name), expected $version" }
         Write-Host 'Published ZIP download and latest-release endpoint verified.'
     }

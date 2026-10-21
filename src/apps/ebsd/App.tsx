@@ -230,6 +230,7 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
           <details className="bg-white rounded-2xl border border-slate-200 overflow-hidden" open={logs.some(log => log.type === 'error') || undefined}><summary className="px-5 py-4 text-xs font-semibold text-slate-500 cursor-pointer">실행 기록 · {logs.length}건 {logs.some(log => log.type === 'error') && '· 오류 있음'}</summary><div className="bg-slate-900 p-5 max-h-80 overflow-auto font-mono text-[11px] leading-6">{logs.length ? logs.map((log, i) => <p key={i} className={`whitespace-pre-wrap break-all ${log.type === 'error' ? 'text-red-300' : log.type === 'warning' ? 'text-amber-200' : log.type === 'success' ? 'text-teal-300' : 'text-slate-400'}`}>{log.message}</p>) : <p className="text-slate-500">실행 기록이 여기에 표시됩니다.</p>}</div></details>
         </div>
       </main>
+      <footer className="pb-4 text-center text-[10px] text-slate-400">Copy right CVD개발팀 SHT</footer>
     </div>
   );
 };

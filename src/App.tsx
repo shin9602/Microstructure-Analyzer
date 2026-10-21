@@ -163,6 +163,7 @@ const Launcher: React.FC = () => {
 
                 <footer className="mt-12 text-center text-slate-500 text-sm">
                     {__APP_VERSION__} • Integrated Research Environment
+                    <p className="mt-2 text-[10px] text-slate-500">Copy right CVD개발팀 SHT</p>
                 </footer>
             </div>
         </div>
