@@ -34,7 +34,7 @@ AutoCalculator는 단순한 데이터 계산기를 넘어, 실험 데이터(XRD,
 ### 📦 시작하기 (설치 및 실행)
 
 1. **배포용 파일 하나 받기**: [AutoCalculator.cmd](https://github.com/shin9602/Microstructure-Analyzer/releases/latest/download/AutoCalculator.cmd)를 다운로드하세요.
-2. **더블 클릭해 실행**: GitHub의 최신 프로그램을 받아 `%LOCALAPPDATA%\AutoCalculator`에 설치합니다. 기존 프로그램 폴더에 넣어 실행하면 그 폴더를 업데이트합니다.
+2. **더블 클릭해 실행**: `AutoCalculator.cmd` 파일이 있는 폴더에 GitHub의 최신 프로그램을 설치합니다. 원하는 빈 폴더에 파일을 넣고 실행하세요. 이후에도 그 폴더를 업데이트합니다.
 3. 첫 실행에 필요한 Node.js·Python 환경을 준비하고 프로그램을 시작합니다. 이후 같은 파일 또는 설치 폴더의 `START_HERE.bat`를 실행하면 GitHub 자동 업데이트와 파일 무결성 검사를 수행합니다.
 
 업데이트는 파일별 SHA-256 검증 후 적용하며, 누락·변경된 프로그램 파일은 같은 버전에서도 복구합니다. 적용 실패 시 교체 전 파일을 복원합니다. 분석 데이터와 설치된 실행 환경은 배포 ZIP에 포함하지 않습니다.
