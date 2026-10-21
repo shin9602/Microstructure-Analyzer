@@ -4,6 +4,39 @@ import numpy as np
 import pandas as pd
 
 
+def export_iq_map(image_path, iq, step, origin, source_table):
+    """Plot unsmoothed IQ and export both display-grid and native scan values."""
+    import matplotlib.pyplot as plt
+    image_path = Path(image_path)
+    iq = np.asarray(iq, dtype=float)
+    valid = np.isfinite(iq) & (iq >= 0)
+    row, column = np.indices(iq.shape)
+    values = np.where(valid, iq, np.nan)
+    pd.DataFrame({'row': row.ravel(), 'column': column.ravel(),
+                  'x_um': origin[0] + column.ravel() * step,
+                  'y_um': origin[1] + row.ravel() * step,
+                  'iq': values.ravel(), 'valid': valid.ravel()}).to_csv(
+        image_path.with_suffix('.csv'), index=False, encoding='utf-8-sig')
+    source_table = np.asarray(source_table)
+    pd.DataFrame({'x_um': source_table[:, 3], 'y_um': source_table[:, 4],
+                  'iq': source_table[:, 5], 'ci': source_table[:, 6],
+                  'source_phase_id': source_table[:, 7].astype(int)}).to_csv(
+        image_path.with_name(image_path.stem + '_raw.csv'), index=False, encoding='utf-8-sig')
+    rows, cols = iq.shape
+    fig, ax = plt.subplots(figsize=(7, max(3, 7 * rows / max(1, cols))))
+    cmap = plt.get_cmap('gray').copy()
+    cmap.set_bad('#7f9eb2')
+    extent = [origin[0] - step / 2, origin[0] + (cols - .5) * step,
+              origin[1] + (rows - .5) * step, origin[1] - step / 2]
+    image = ax.imshow(np.ma.array(iq, mask=~valid), cmap=cmap, extent=extent,
+                      interpolation='nearest')
+    ax.set(title='IQ map (raw, no smoothing)', xlabel='X (um)', ylabel='Y (um)')
+    fig.colorbar(image, ax=ax, label='Image Quality (IQ)', fraction=.045, pad=.03)
+    fig.tight_layout()
+    fig.savefig(image_path, dpi=160, bbox_inches='tight')
+    plt.close(fig)
+
+
 def export_histogram(image_path, counts, edges, raw_columns, extra_columns=None):
     image_path = Path(image_path)
     counts, edges = np.asarray(counts), np.asarray(edges)

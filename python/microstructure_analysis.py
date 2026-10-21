@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
 from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry, clean_phase_map, measured_boundaries
-from ebsd_exports import export_histogram
+from ebsd_exports import export_histogram, export_iq_map
 
 warnings.filterwarnings('ignore')
 
@@ -71,6 +71,8 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
     phase_audit['source_total_points'] = int(len(iq_raw))
     phase_audit['file_integrity'] = xmap._file_integrity
     included_pixels = max(1, int(np.sum(valid_scan_mask)))
+    export_iq_map(os.path.join(output_dir, f"IQ_MAP_{base_name}.png"), raw_iq_2d,
+                  xstep, (float(xmap.x.min()), float(xmap.y.min())), table)
     try:
         iq_flat = smoothed_iq_2d.ravel()
         # --- Threshold Verification Plot (Reference Lines) ---
