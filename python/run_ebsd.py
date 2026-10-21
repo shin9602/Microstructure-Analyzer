@@ -43,8 +43,11 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--co-wt", type=float)
     parser.add_argument("--comp-map", default="{}")
-    parser.add_argument('--gamma-mode', choices=('all_other', 'named'), default='all_other')
+    parser.add_argument('--gamma-mode', choices=('all_other', 'named', 'manual'), default='all_other')
+    parser.add_argument('--analysis-options', default='{}')
     args = parser.parse_args()
+    options = json.loads(args.analysis_options)
+    co_basis = options.get('eta', {}).get('co_basis', 'remaining')
     folder = args.uploaded
     if not folder:
         try:
@@ -89,10 +92,27 @@ def main():
             analysis_file = file
             if file.suffix.lower() == ".osc":
                 analysis_file = convert_osc_to_ang(file, file_out / file.with_suffix(".ang").name)
-            record["basic"] = process_combined_microstructure(str(analysis_file), str(file_out), co_wt, args.gamma_mode)
+            key = file.with_suffix('.ang').name
+            assignments = options.get('phase_maps', {}).get(key)
+            eta_selection = options.get('eta_masks', {}).get(key) if options.get('eta', {}).get('enabled') else None
+            if options.get('eta', {}).get('enabled') and eta_selection is None:
+                raise ValueError('에타 영역 선택을 먼저 완료하세요: ' + file.name)
+            if eta_selection:
+                import hashlib
+                hasher = hashlib.sha256()
+                with file.open('rb') as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b''):
+                        hasher.update(block)
+                if hasher.hexdigest() != eta_selection['source_sha256']:
+                    raise ValueError('에타 영역을 선택한 파일과 현재 파일이 다릅니다. 다시 선택하세요.')
+            record['basic'] = process_combined_microstructure(str(analysis_file), str(file_out), co_wt, args.gamma_mode, assignments, eta_selection, co_basis)
             if record["basic"] is None:
                 raise ValueError("기본 분석 실패: 위의 파일/상 정보 오류를 확인하세요.")
             audit = record["basic"]["PhaseAudit"]
+            if audit.get('eta_selection_enabled'):
+                record['warnings'].append('에타 크기는 선택 영역의 연결된 덩어리별 등가원직경입니다. 에타 영역은 WC·Co·gamma 입도·입계·연결도 계산에서 제외하며, 면적분율은 에타를 포함한 전체 유효 면적 기준입니다.')
+            if audit.get('user_excluded_points'):
+                record['warnings'].append(f"사용자가 제외한 {audit['user_excluded_points']:,}점은 분석에서 제외했습니다. 제외 면적도 전체 유효 면적 기준으로 별도 표시합니다.")
             integrity = audit.get("file_integrity", {})
             if integrity.get("has_errors"):
                 record["file_error"] = "파일에 오류가 있습니다. " + " ".join(integrity["details"]) + f" 손상·누락 등을 포함해 {audit['source_excluded_points']:,}개 측정점이 제외되었습니다. 결과는 읽을 수 있는 데이터만으로 계산한 부분 분석입니다."
@@ -105,7 +125,7 @@ def main():
                 record['warnings'].append(f"입자를 판정하지 못한 WC {audit.get('wc_unassigned_grain_points', 0):,}점, gamma상 {audit.get('gamma_unassigned_grain_points', 0):,}점도 해당 상의 색으로 표시했습니다. 면적분율에는 포함하지만 입도에서는 제외하며, 입도·연결도·평균자유행로는 판정 가능한 영역에 제한된 결과입니다.")
             emit({"type": "progress", "message": f"{file.name} · 형상·방위 분석", "percent": int((index + 0.5) / len(inputs) * 100)})
             try:
-                record["advanced"] = process_advanced_wc(str(analysis_file), str(file_out), co_wt, args.gamma_mode)
+                record["advanced"] = process_advanced_wc(str(analysis_file), str(file_out), co_wt, args.gamma_mode, assignments, eta_selection, co_basis)
                 if record["advanced"] is None:
                     raise ValueError("고급 지표를 계산하지 못했습니다.")
                 if record["advanced"].get("T_Idx") is None:
@@ -148,8 +168,8 @@ def main():
         writer.writerows(rows)
     txt_path = run_dir / "EBSD_report.txt"
     with txt_path.open("w", encoding="utf-8") as stream:
-        mode_label = '전체 IQ로 Co → 나머지 WC·gamma (FCC)' if args.gamma_mode == 'all_other' else '상 이름 기준 (기존)'
-        stream.write(f"EBSD 통합 분석 결과\ngamma상 모드: {mode_label}\n기존 방위 사용 · 원본 패턴 재인덱싱 아님\n입도: 등가원직경(µm), 입계 기준: 5°, CI ≥ 0.1\n기본 입도: 판정 가능한 입자만 계산, 거리 보간 없음 / 형상·방위 입도: 외곽 10px 및 5px 미만 입자 제외\nCo 입력값: 중량비를 체적비로 환산하여 IQ 순위로 위치 추정. 기본 모드는 전체 유효 면적의 IQ에서 Co를 먼저 배정, 기존 모드는 WC-Co 영역 기준.\n\n")
+        mode_label = '전체 IQ로 Co → 나머지 WC·gamma (FCC)' if args.gamma_mode == 'all_other' else ('Phase 직접 지정' if args.gamma_mode == 'manual' else '상 이름 기준 (기존)')
+        stream.write(f"EBSD 통합 분석 결과\ngamma상 모드: {mode_label}\n기존 방위 사용 · 원본 패턴 재인덱싱 아님\n입도: 등가원직경(µm), 입계 기준: 5°, CI ≥ 0.1\n기본 입도: 판정 가능한 입자만 계산, 거리 보간 없음 / 형상·방위 입도: 외곽 10px 및 5px 미만 입자 제외\n면적분율: 에타·사용자 제외 영역을 포함한 전체 유효 면적 기준. 에타 크기: 선택 영역별 등가원직경.\nCo 입력값: 중량비를 체적비로 환산하여 IQ 순위로 위치 추정. 기본 모드는 전체 유효 면적의 IQ에서 Co를 먼저 배정, 기존 모드는 WC-Co 영역 기준. 에타 선택 시 설정된 Co 함량 적용 기준을 따르며, Phase 직접 지정 모드에서는 Co 함량 입력을 적용하지 않습니다.\n\n")
         stream.write(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
     archive = run_dir / "EBSD_all_results.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:

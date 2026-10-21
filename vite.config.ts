@@ -87,6 +87,8 @@ function spawnPythonProcess(pythonCmd: string, args: string[], cwd: string) {
 function pythonRunnerPlugin(): Plugin {
   const uploads = new Map<string, string>()
   const activeUploads = new Set<string>()
+  const etaMasks = new Map<string, Record<string, { path: string; width: number; height: number; source_sha256: string }>>()
+  const previewDirectories = new Map<string, Set<string>>()
   const removeUpload = async (session: string) => {
     const directory = uploads.get(session)
     if (!directory || activeUploads.has(session)) return
@@ -94,11 +96,74 @@ function pythonRunnerPlugin(): Plugin {
     if (!path.resolve(directory).startsWith(allowedRoot)) throw new Error('Invalid upload cleanup path')
     await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 })
     uploads.delete(session)
+    etaMasks.delete(session)
+    const previewRoot = path.resolve(ebsdResultsRoot, 'previews') + path.sep
+    for (const preview of previewDirectories.get(session) || []) {
+      if (!path.resolve(preview).startsWith(previewRoot)) throw new Error('Invalid preview cleanup path')
+      await fs.promises.rm(preview, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 })
+    }
+    previewDirectories.delete(session)
   }
   return {
     name: 'python-runner',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
+        if (req.url?.startsWith('/api/prepare-ebsd') || req.url?.startsWith('/api/eta-mask')) {
+          const url = new URL(req.url, 'http://localhost')
+          const session = url.searchParams.get('session') || ''
+          const directory = uploads.get(session)
+          const filename = url.searchParams.get('filename') || ''
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          if (!directory || activeUploads.has(session) || path.basename(filename) !== filename || !/\.(osc|ang)$/i.test(filename) || !fs.existsSync(path.join(directory, filename))) {
+            res.statusCode = 400; res.end(JSON.stringify({ error: '파일 업로드를 다시 준비한 뒤 영역을 선택하세요.' })); req.resume(); return
+          }
+          if (url.pathname === '/api/eta-mask') {
+            const width = Number(url.searchParams.get('width')), height = Number(url.searchParams.get('height'))
+            const digest = url.searchParams.get('source_sha256') || ''
+            if (req.method !== 'POST' || !Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > 20_000_000 || !/^[a-f0-9]{64}$/.test(digest) || Number(req.headers['content-length']) !== width * height) {
+              res.statusCode = 400; res.end(JSON.stringify({ error: '에타 영역 데이터의 크기 또는 파일 정보가 올바르지 않습니다.' })); req.resume(); return
+            }
+            const destination = path.join(directory, randomUUID() + '.eta-mask.bin')
+            activeUploads.add(session)
+            void (async () => {
+              try {
+                await saveUpload(req, destination)
+                const hasher = createHash('sha256')
+                for await (const block of fs.createReadStream(path.join(directory, filename))) hasher.update(block)
+                if (hasher.digest('hex') !== digest) throw new Error('에타 영역을 선택한 파일과 업로드한 파일이 다릅니다.')
+                const masks = etaMasks.get(session) || {}
+                const key = filename.replace(/\.(osc|ang)$/i, '.ang')
+                const previous = masks[key]?.path
+                masks[key] = { path: destination, width, height, source_sha256: digest }
+                etaMasks.set(session, masks)
+                if (previous) await fs.promises.rm(previous, { force: true })
+                res.end(JSON.stringify({ success: true }))
+              } catch (error) {
+                await fs.promises.rm(destination, { force: true }).catch(() => undefined)
+                if (!res.destroyed) { res.statusCode = 400; res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) })) }
+              } finally { activeUploads.delete(session) }
+            })()
+            return
+          }
+          activeUploads.add(session)
+          const output = path.join(ebsdResultsRoot, 'previews', randomUUID())
+          const previews = previewDirectories.get(session) || new Set<string>()
+          previews.add(output); previewDirectories.set(session, previews)
+          const child = spawnPythonProcess(resolvePythonCommand(), [path.join('python', 'prepare_ebsd.py'), '--input', path.join(directory, filename), '--output', output, '--results-root', ebsdResultsRoot], projectRoot)
+          let stdout = '', stderr = '', complete = false
+          child.stdout.on('data', chunk => { stdout += chunk.toString('utf8') })
+          child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString('utf8')).slice(-6000) })
+          child.on('error', error => { stderr += error.message })
+          child.on('close', code => {
+            complete = true; activeUploads.delete(session)
+            if (res.destroyed) return
+            const descriptor = stdout.split('\n').find(line => line.startsWith('PREVIEW_DATA:'))
+            if (code === 0 && descriptor) res.end(descriptor.slice(13))
+            else { res.statusCode = 500; res.end(JSON.stringify({ error: '에타 편집용 IQ 맵 준비 실패: ' + (stderr || stdout).slice(-2500) })) }
+          })
+          res.on('close', () => { if (!complete) child.kill() })
+          return
+        }
         if (req.url && req.url.startsWith('/api/clear-ebsd-temp')) {
             res.setHeader('Content-Type', 'application/json; charset=utf-8')
             try {
@@ -195,6 +260,13 @@ function pythonRunnerPlugin(): Plugin {
           const coWt = urlObj.searchParams.get('co_wt')
           const compMap = urlObj.searchParams.get('comp_map')
           const gammaMode = urlObj.searchParams.get('gamma_mode') ?? 'all_other'
+          let analysisOptions: Record<string, unknown>
+          try {
+            analysisOptions = JSON.parse(urlObj.searchParams.get('analysis_options') || '{}')
+            if (!analysisOptions || Array.isArray(analysisOptions) || typeof analysisOptions !== 'object') throw new Error('invalid')
+          } catch {
+            res.write(`data: ${JSON.stringify({ type: 'error', message: '분석 설정을 읽지 못했습니다.' })}\n\n`); res.end(); return
+          }
           const session = urlObj.searchParams.get('session') || ''
           const uploadDirectory = uploads.get(session)
           if (useTemp && (!uploadDirectory || activeUploads.has(session))) {
@@ -203,7 +275,7 @@ function pythonRunnerPlugin(): Plugin {
             res.end()
             return
           }
-          if (!['all_other', 'named'].includes(gammaMode)) {
+          if (!['all_other', 'named', 'manual'].includes(gammaMode)) {
             res.write(`data: ${JSON.stringify({ type: 'error', message: '지원하지 않는 gamma상 분석 모드입니다.' })}\n\n`)
             res.write(`data: ${JSON.stringify({ type: 'done', code: 2 })}\n\n`)
             res.end()
@@ -231,6 +303,8 @@ function pythonRunnerPlugin(): Plugin {
             return
           }
           const args = [scriptRelPath, '--output', ebsdResultsRoot]
+          analysisOptions.eta_masks = useTemp ? etaMasks.get(session) || {} : {}
+          args.push('--analysis-options', JSON.stringify(analysisOptions))
           args.push('--gamma-mode', gammaMode)
           if (useTemp) {
               args.push('--uploaded', uploadDirectory!)

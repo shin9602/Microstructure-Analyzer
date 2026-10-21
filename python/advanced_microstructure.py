@@ -24,6 +24,7 @@ from skimage.measure import regionprops
 import json
 
 from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry, source_ipf_map
+from ebsd_regions import load_eta_mask, smooth_iq_excluding
 from ebsd_exports import export_histogram, mesh_data_frame
 
 warnings.filterwarnings('ignore')
@@ -35,7 +36,7 @@ def _get_cmap(name):
         return registry[name]
     return cm.get_cmap(name)
 
-def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other'):
+def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other', phase_assignments=None, eta_selection=None, co_basis='remaining'):
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     print(f"\n[Advanced Microstructure] Processing: {base_name}")
     print("- 데이터 불러오는 중...")
@@ -44,7 +45,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other
     try:
         xmap, table, xstep = load_ebsd(file_path)
         iq_raw, ci_raw, phase_raw = table[:, 5], table[:, 6], table[:, 7]
-        phase_mapping = resolve_phases(file_path, phase_raw, gamma_mode)
+        phase_mapping = resolve_phases(file_path, phase_raw, gamma_mode, phase_assignments)
     except Exception as e:
         print(f"Error loading {file_path}: {e}")
         return None
@@ -71,11 +72,15 @@ def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other
         valid_scan_mask = np.ones((rows, cols), dtype=bool)
 
     print("- 전처리 및 위상 재정의 중...")
-    smoothed_iq_2d = median_filter(raw_iq_2d, size=3)
+    eta_mask = load_eta_mask(raw_iq_2d.shape, eta_selection)
+    eta_mask |= np.isin(raw_phases_2d, phase_mapping.get('Eta', []))
+    excluded_mask = np.isin(raw_phases_2d, phase_mapping.get('Exclude', []))
+    smoothed_iq_2d = smooth_iq_excluding(raw_iq_2d, eta_mask | excluded_mask)
     valid_scan_mask &= raw_iq_2d >= 0
     
-    phases, iq_t1, phase_audit = split_wc_co(smoothed_iq_2d, raw_phases_2d, phase_mapping, co_wt, valid_scan_mask, gamma_mode)
+    phases, iq_t1, phase_audit = split_wc_co(smoothed_iq_2d, raw_phases_2d, phase_mapping, co_wt, valid_scan_mask, gamma_mode, eta_mask, co_basis)
     valid_scan_mask &= phases != 0
+    analysis_scan_mask = valid_scan_mask & np.isin(phases, [1, 2, 3])
     mask_wc = (phases == 1) & (ci_map >= 0.1)
     xmap_symmetry = analysis_symmetry(xmap, phase_mapping, 1, gamma_mode)
 
@@ -141,10 +146,10 @@ def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other
     plt.imsave(os.path.join(output_dir, f"ADV_01_IPF_MAP_{base_name}.png"), ipf_img, dpi=300)
 
     # Preserve the original phase/symmetry for this all-phase orientation view.
-    ipf_all, ipf_metadata = source_ipf_map(xmap, rotations_map, raw_phases_2d, valid_scan_mask, phase_mapping, gamma_mode)
+    ipf_all, ipf_metadata = source_ipf_map(xmap, rotations_map, raw_phases_2d, analysis_scan_mask, phase_mapping, gamma_mode)
     plt.imsave(os.path.join(output_dir, f"ADV_08_IPF_ALL_{base_name}.png"), ipf_all, dpi=300)
     phase_audit['ipf_all_source_phases'] = ipf_metadata
-    phase_audit['ipf_all_low_ci_points'] = int(np.sum(valid_scan_mask & (raw_phases_2d > 0) & (ci_map < .1)))
+    phase_audit['ipf_all_low_ci_points'] = int(np.sum(analysis_scan_mask & (raw_phases_2d > 0) & (ci_map < .1)))
     
     el_map = np.ones((rows, cols, 3)); cmap_el = _get_cmap('plasma')
     for p in props: 

@@ -126,8 +126,36 @@ try {
     assert.equal((await uploaded.json()).file, name);
     assert.equal((await fsp.stat(path.join(runtime, 'uploads', actualSession, name))).size, size);
     console.log('PASS: actual OSC uploaded without conversion in the HTTP request:', size, 'bytes');
+    const testEta = process.argv.includes('--eta');
+    let expectedEta = 0, etaCount = 0, previewReference;
+    if (testEta) {
+      const prepared = await fetch(base + '/api/prepare-ebsd?session=' + actualSession + '&filename=' + encodeURIComponent(name));
+      assert.equal(prepared.status, 200, await prepared.clone().text());
+      const descriptor = await prepared.json();
+      previewReference = descriptor.iq;
+      const iq = await (await fetch(base + '/api/ebsd-results/' + encodeURIComponent(descriptor.iq))).arrayBuffer();
+      const valid = new Uint8Array(await (await fetch(base + '/api/ebsd-results/' + encodeURIComponent(descriptor.valid))).arrayBuffer());
+      assert.equal(iq.byteLength, descriptor.width * descriptor.height * 4);
+      const mask = new Uint8Array(valid.length);
+      for (let y = Math.floor(descriptor.height * .1); y < Math.floor(descriptor.height * .3); y++) {
+        for (let x = Math.floor(descriptor.width * .1); x < Math.floor(descriptor.width * .3); x++) {
+          const index = y * descriptor.width + x;
+          if (valid[index]) { mask[index] = 1; etaCount++; }
+        }
+      }
+      expectedEta = etaCount / valid.reduce((a, b) => a + b, 0) * 100;
+      const parameters = new URLSearchParams({session: actualSession, filename: name, width: String(descriptor.width), height: String(descriptor.height), source_sha256: descriptor.source_sha256});
+      const invalid = await fetch(base + '/api/eta-mask?' + parameters, {method:'POST', body: new Uint8Array(1)});
+      assert.equal(invalid.status, 400);
+      const wrongHash = new URLSearchParams(parameters); wrongHash.set('source_sha256', '0'.repeat(64));
+      assert.equal((await fetch(base + '/api/eta-mask?' + wrongHash, {method:'POST', body:mask})).status, 400);
+      const saved = await fetch(base + '/api/eta-mask?' + parameters, {method:'POST', body:mask});
+      assert.equal(saved.status, 200, await saved.clone().text());
+      console.log('PASS: exact-grid IQ reference, mask shape/hash rejection, and eta selection upload:', etaCount, 'test pixels');
+    }
     const coWeight = process.argv[3] ?? '9';
-    const text = await (await fetch(base + '/api/run-ebsd?temp=1&session=' + actualSession + '&co_wt=' + encodeURIComponent(coWeight))).text();
+    const options = testEta ? '&analysis_options=' + encodeURIComponent(JSON.stringify({eta:{enabled:true,co_basis:'remaining'}})) : '';
+    const text = await (await fetch(base + '/api/run-ebsd?temp=1&session=' + actualSession + '&co_wt=' + encodeURIComponent(coWeight) + options)).text();
     const events = text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)));
     const result = events.find(event => event.type === 'result_pack');
     assert.ok(result, text.slice(-2500));
@@ -140,6 +168,23 @@ try {
     assert.ok(Math.abs(audit.co_percent_before_cleanup - audit.co_target_percent_of_total) < 0.01);
     assert.equal(result.samples[0].advanced.PhaseAudit.classification_order, audit.classification_order);
     console.log('PASS: basic/advanced use whole-map IQ Co first; Co area matches the whole-map target:', audit.co_percent_before_cleanup);
+    if (testEta) {
+      const basic = result.samples[0].basic;
+      assert.ok(Math.abs(basic.Eta_Area - expectedEta) < 1e-8);
+      assert.equal(audit.eta_points, etaCount);
+      assert.equal(result.samples[0].advanced.PhaseAudit.eta_points, etaCount);
+      assert.ok(Math.abs(basic.WC_Vol + basic.Co_Vol + basic.G_Vol + basic.Eta_Area + basic.Excluded_Area - 100) < 1e-8);
+      const sizeImage = result.samples[0].images.find(name => name.includes('ETA_SIZE_'));
+      assert.ok(sizeImage);
+      assert.equal(result.samples[0].image_data[sizeImage].length, 2);
+      const thresholdImage = result.samples[0].images.find(name => name.includes('threshold_check_'));
+      assert.ok(thresholdImage);
+      const histogram = result.samples[0].image_data[thresholdImage].find(name => !name.endsWith('_raw.csv'));
+      const rows = (await (await fetch(base + '/api/ebsd-results/' + encodeURIComponent(histogram))).text()).trim().split(/\r?\n/);
+      const countColumn = rows.shift().split(',').indexOf('count');
+      assert.equal(rows.reduce((sum,row) => sum + Number(row.split(',')[countColumn]),0), audit.analysis_points);
+      console.log('PASS: eta removed in both analyses; total Area% sums to 100; size plot and both CSV exports available');
+    }
     const image = result.samples[0].images.find(name => name.includes('IQ_MAP_'));
     assert.ok(image);
     const png = await fetch(base + '/api/ebsd-results/' + encodeURIComponent(image));
@@ -149,6 +194,7 @@ try {
     assert.equal(zip.status, 200);
     assert.equal(Buffer.from(await zip.arrayBuffer()).subarray(0, 2).toString(), 'PK');
     await waitFor(async () => !fs.existsSync(path.join(runtime, 'uploads', actualSession)));
+    if (previewReference) await waitFor(async () => !fs.existsSync(path.join(runtime, 'results', previewReference)));
     console.log('PASS: actual OSC conversion, combined analysis, IQ PNG and ZIP download; input cleaned afterward');
   }
   assert.equal(reloads, 0, 'Uploading must not trigger browser reload');

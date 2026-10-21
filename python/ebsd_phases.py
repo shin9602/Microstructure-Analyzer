@@ -11,7 +11,7 @@ from io import StringIO
 import numpy as np
 from skimage.filters import threshold_otsu
 
-GAMMA_MODES = ('all_other', 'named')
+GAMMA_MODES = ('all_other', 'named', 'manual')
 
 
 def validate_gamma_mode(mode):
@@ -240,7 +240,7 @@ def source_ipf_map(xmap, rotations, source_phases, valid_scan_mask, mapping=None
         mask = valid_scan_mask & (source_phases == phase_id)
         phase = xmap.phases[int(phase_id)]
         group = phase.point_group
-        if mapping is not None and gamma_mode == 'all_other' and phase_id in mapping['Gamma']:
+        if mapping is not None and gamma_mode != 'named' and phase_id in mapping['Gamma']:
             group = symmetry.O
         if group is None:
             image[mask] = .82
@@ -253,7 +253,7 @@ def source_ipf_map(xmap, rotations, source_phases, valid_scan_mask, mapping=None
     return image, metadata
 
 
-def resolve_phases(path, raw_phases, gamma_mode='all_other'):
+def resolve_phases(path, raw_phases, gamma_mode='all_other', phase_assignments=None):
     validate_gamma_mode(gamma_mode)
     definitions = read_phase_definitions(path)
     roles = {pid: phase_role(value) for pid, value in definitions.items()}
@@ -264,6 +264,15 @@ def resolve_phases(path, raw_phases, gamma_mode='all_other'):
         for pid in active | set(definitions):
             if pid > 0 and roles.get(pid) != 'WC':
                 roles[pid] = 'Gamma'
+    if gamma_mode == 'manual':
+        assignments = phase_assignments or {}
+        allowed = {'WC', 'Co', 'Gamma', 'Eta', 'Exclude'}
+        if any(value not in allowed for value in assignments.values()):
+            raise ValueError('Phase 직접 지정 값이 올바르지 않습니다.')
+        missing = [pid for pid in sorted(active) if str(pid) not in assignments]
+        if missing:
+            raise ValueError(f'Phase 직접 지정이 누락되었습니다: {missing}')
+        roles = {pid: assignments.get(str(pid), 'Exclude') for pid in set(definitions) | active}
     unknown = [pid for pid in sorted(active) if roles.get(pid) is None]
     if unknown:
         details = ", ".join(f"{pid}: {definitions.get(pid, {}).get('MaterialName', 'missing phase definition')}" for pid in unknown)
@@ -272,17 +281,20 @@ def resolve_phases(path, raw_phases, gamma_mode='all_other'):
     if not wc_ids:
         raise ValueError("No WC material definition found. Phase 1 is not assumed to be WC.")
     for pid in wc_ids:
-        definition = definitions[pid]
+        definition = definitions.get(pid, {})
         if "Symmetry" in definition and definition["Symmetry"] not in ("62", "6", "6/mmm", "622", "-6m2"):
             raise ValueError(f"WC phase {pid} has incompatible symmetry: {definition['Symmetry']}")
     mapping = {role: [pid for pid, value in roles.items() if value == role] for role in ("WC", "Co", "Gamma")}
     mapping["Other"] = unknown
+    if gamma_mode == 'manual':
+        mapping['Eta'] = [pid for pid, role in roles.items() if role == 'Eta']
+        mapping['Exclude'] = [pid for pid, role in roles.items() if role == 'Exclude']
     for pid in sorted(definitions):
         print(f"- Phase {pid}: {definitions[pid].get('MaterialName', '?')} -> {roles[pid] or ('Other / IQ model' if pid in active else 'not present')}", flush=True)
     return mapping
 
 
-def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode='all_other'):
+def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode='all_other', eta_mask=None, co_basis='remaining'):
     """Default: assign Co by whole-map IQ, then classify remaining WC/gamma.
 
     Named mode retains the historical gamma-first WC/Co split.
@@ -291,6 +303,15 @@ def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode
     iq = np.asarray(iq)
     valid = np.ones(iq.shape, dtype=bool) if valid_mask is None else np.asarray(valid_mask, dtype=bool)
     valid = valid & (iq >= 0)
+    scan_valid = valid.copy()
+    eta = np.zeros(iq.shape, dtype=bool) if eta_mask is None else np.asarray(eta_mask, dtype=bool)
+    if eta.shape != iq.shape:
+        raise ValueError('에타 선택 격자가 분석 격자와 다릅니다.')
+    eta = (eta | np.isin(raw_phases, mapping.get('Eta', []))) & scan_valid
+    excluded = np.isin(raw_phases, mapping.get('Exclude', [])) & scan_valid & ~eta
+    valid &= ~eta & ~excluded
+    if co_basis not in ('remaining', 'total'):
+        raise ValueError('Co 함량 기준이 올바르지 않습니다.')
     co_first = gamma_mode == 'all_other'
     gamma = np.isin(raw_phases, mapping["Gamma"]) & valid
     wc = np.isin(raw_phases, mapping['WC']) & valid
@@ -298,7 +319,7 @@ def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode
     values = iq[candidate]
     if not np.all(np.isfinite(values)):
         raise ValueError("Non-finite IQ values in WC/Co region")
-    composition = co_wt is not None and co_wt != -1
+    composition = co_wt is not None and co_wt != -1 and gamma_mode != 'manual'
     ratio = None
     if composition:
         if not np.isfinite(co_wt) or not 0 <= co_wt <= 100:
@@ -307,18 +328,30 @@ def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode
         wc_volume = (100.0 - co_wt) / 15.63
         ratio = co_volume / (co_volume + wc_volume)
     phases = np.zeros(iq.shape, dtype=np.int32)
-    if co_first:
+    if gamma_mode == 'manual':
+        for role, label in (('WC', 1), ('Co', 2), ('Gamma', 3)):
+            phases[valid & np.isin(raw_phases, mapping[role])] = label
+    elif co_first:
         phases[valid] = 3
         phases[wc] = 1
     else:
         phases[gamma] = 3
         phases[candidate] = 1
-    if not values.size:
+    phases[eta] = 4
+    if gamma_mode == 'manual':
+        excluded = scan_valid & (phases == 0)
+        valid = np.isin(phases, [1, 2, 3])
+    if composition and co_basis == 'total' and int(scan_valid.sum() * ratio) > values.size:
+        raise ValueError('에타·제외 영역 때문에 전체 시료 기준 Co 목표를 배정할 수 없습니다. Co 함량 기준을 남은 영역으로 변경하세요.')
+    if gamma_mode == 'manual' or not values.size:
         threshold = None
     elif composition:
         # Rank by IQ to meet the target even when many pixels share an IQ.
         # Stable ordering makes ties reproducible within the selected IQ pool.
-        count = int(values.size * ratio)
+        basis_count = int(scan_valid.sum()) if co_basis == 'total' else values.size
+        count = int(basis_count * ratio)
+        if count > values.size:
+            raise ValueError('에타·제외 영역 때문에 전체 시료 기준 Co 목표를 배정할 수 없습니다. Co 함량 기준을 남은 영역으로 변경하세요.')
         order = np.argsort(values, kind="stable")
         indices = np.flatnonzero(candidate)
         phases.ravel()[indices[order[:count]]] = 2
@@ -328,20 +361,31 @@ def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode
         phases[candidate & (iq <= threshold)] = 2
     audit = {
         'gamma_mode': gamma_mode,
-        'classification_order': 'Whole-map IQ Co -> remaining source WC / gamma' if co_first else 'Named gamma -> remaining IQ WC/Co',
-        'gamma_symmetry_model': 'Unified FCC (432), original orientations' if gamma_mode == 'all_other' else 'Original source phases and symmetries',
+        'classification_order': 'Manual source phase assignments' if gamma_mode == 'manual' else ('Whole-map IQ Co -> remaining source WC / gamma' if co_first else 'Named gamma -> remaining IQ WC/Co'),
+        'gamma_symmetry_model': 'Unified FCC (432), original orientations' if gamma_mode != 'named' else 'Original source phases and symmetries',
         "source_phase_ids": mapping,
-        "method": "Co wt% + IQ ranking" if composition else "IQ Otsu",
+        "method": "Manual phase assignment" if gamma_mode == "manual" else ("Co wt% + IQ ranking" if composition else "IQ Otsu"),
         "co_wt_percent": co_wt if composition else None,
-        "co_target_percent_of_non_gamma": ratio * 100 if ratio is not None and not co_first else None,
-        "co_target_percent_of_total": ratio * 100 if ratio is not None and co_first else None,
+        "co_target_percent_of_non_gamma": ratio * 100 if ratio is not None and not co_first and co_basis == 'remaining' else None,
+        "co_target_percent_of_total": ratio * 100 if ratio is not None and (co_first or co_basis == 'total') else None,
         "iq_threshold": threshold,
         "wc_percent_before_cleanup": float(np.mean(phases == 1) * 100),
         "co_percent_before_cleanup": float(np.mean(phases == 2) * 100),
         "gamma_percent": float(np.mean(gamma) * 100),
         "excluded_points": int(np.sum(phases == 0)),
     }
-    included = max(1, int(np.sum(phases != 0)))
+    included = max(1, int(scan_valid.sum()))
+    audit.update({'valid_scan_points': int(scan_valid.sum()), 'analysis_points': int(valid.sum()),
+                  'eta_points': int(eta.sum()), 'eta_percent': float(eta.sum() / included * 100),
+                  'user_excluded_points': int(excluded.sum()),
+                  'excluded_area_percent': float(excluded.sum() / included * 100),
+                  'co_basis': co_basis,
+                  'co_percent_of_analyzed_area': float(np.sum(phases == 2) / max(1, valid.sum()) * 100)})
+    if composition and co_first and co_basis == 'remaining':
+        audit['co_target_percent_of_total'] = ratio * valid.sum() / included * 100
+    if gamma_mode == 'manual':
+        audit['co_target_percent_of_non_gamma'] = None
+        audit['co_target_percent_of_total'] = None
     audit["wc_percent_before_cleanup"] = float(np.sum(phases == 1) / included * 100)
     audit["co_percent_before_cleanup"] = float(np.sum(phases == 2) / included * 100)
     audit["gamma_percent"] = float(np.sum(phases == 3) / included * 100)
@@ -351,7 +395,7 @@ def split_wc_co(iq, raw_phases, mapping, co_wt=None, valid_mask=None, gamma_mode
 
 def analysis_symmetry(xmap, mapping, internal_id, gamma_mode='all_other'):
     validate_gamma_mode(gamma_mode)
-    if int(internal_id) == 3 and gamma_mode == 'all_other':
+    if int(internal_id) == 3 and gamma_mode != 'named':
         from orix.quaternion import symmetry
         return symmetry.O
     # Co components ignore orientation. WC/gamma must use their source IDs.

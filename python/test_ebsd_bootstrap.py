@@ -11,7 +11,7 @@ class BootstrapTests(unittest.TestCase):
     def test_isolated_python_finds_modules_after_relocation(self):
         source = Path(__file__).resolve().parent
         modules = ('microstructure_analysis', 'advanced_microstructure',
-                   'ebsd_phases', 'ebsd_exports', 'osc_to_ang')
+                   'ebsd_phases', 'ebsd_exports', 'ebsd_regions', 'osc_to_ang')
         with tempfile.TemporaryDirectory(prefix='ebsd_한글 relocation_') as folder:
             relocated = Path(folder) / 'different installation' / 'python'
             relocated.mkdir(parents=True)

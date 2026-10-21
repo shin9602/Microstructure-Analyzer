@@ -18,18 +18,19 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
 from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry, clean_phase_map, measured_boundaries, grain_neighbor_connections
+from ebsd_regions import load_eta_mask, smooth_iq_excluding
 from ebsd_exports import export_histogram, export_iq_map
 
 warnings.filterwarnings('ignore')
 
-def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mode='all_other'):
+def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mode='all_other', phase_assignments=None, eta_selection=None, co_basis='remaining'):
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     print(f"\n[Microstructure Analysis] Processing: {base_name}", flush=True)
     
     try:
         xmap, table, xstep = load_ebsd(file_path)
         iq_raw, ci_raw, phase_raw = table[:, 5], table[:, 6], table[:, 7]
-        phase_mapping = resolve_phases(file_path, phase_raw, gamma_mode)
+        phase_mapping = resolve_phases(file_path, phase_raw, gamma_mode, phase_assignments)
     except Exception as e:
         print(f"Error loading {file_path}: {e}")
         return None
@@ -61,74 +62,88 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
         ci_map = ci_raw.reshape(rows, cols)
         rotations_map = xmap.rotations.reshape(rows, cols).data
 
-    smoothed_iq_2d = median_filter(raw_iq_2d, size=3)
+    eta_mask = load_eta_mask(raw_iq_2d.shape, eta_selection)
+    eta_mask |= np.isin(raw_phases_2d, phase_mapping.get('Eta', []))
+    excluded_mask = np.isin(raw_phases_2d, phase_mapping.get('Exclude', []))
+    smoothed_iq_2d = smooth_iq_excluding(raw_iq_2d, eta_mask | excluded_mask)
     valid_scan_mask = raw_iq_2d >= 0
     
     # Shared phase-aware IQ split; source IDs are never analysis labels.
-    phases, iq_t1, phase_audit = split_wc_co(smoothed_iq_2d, raw_phases_2d, phase_mapping, co_wt, valid_scan_mask, gamma_mode)
+    phases, iq_t1, phase_audit = split_wc_co(smoothed_iq_2d, raw_phases_2d, phase_mapping, co_wt, valid_scan_mask, gamma_mode, eta_mask, co_basis)
     valid_scan_mask &= phases != 0
     phase_audit['source_excluded_points'] = int(np.sum(iq_raw < 0))
     phase_audit['source_total_points'] = int(len(iq_raw))
     phase_audit['file_integrity'] = xmap._file_integrity
-    included_pixels = max(1, int(np.sum(valid_scan_mask)))
+    included_pixels = max(1, phase_audit['valid_scan_points'])
+    eta_metrics = {}
+    if eta_selection is not None or phase_mapping.get('Eta'):
+        from ebsd_regions import export_eta_regions
+        eta_metrics = export_eta_regions(output_dir, base_name, phases == 4,
+                                         raw_iq_2d >= 0, raw_iq_2d, xstep,
+                                         (float(xmap.x.min()), float(xmap.y.min())))
+        phase_audit['eta_size_method'] = 'Four-connected selected regions; equivalent circle diameter; field-edge regions included'
+    phase_audit['eta_selection_enabled'] = eta_selection is not None or bool(phase_mapping.get('Eta'))
     export_iq_map(os.path.join(output_dir, f"IQ_MAP_{base_name}.png"), raw_iq_2d,
                   xstep, (float(xmap.x.min()), float(xmap.y.min())), table)
-    try:
-        iq_flat = smoothed_iq_2d.ravel()
-        # --- Threshold Verification Plot (Reference Lines) ---
-        print("- Generating Threshold Verification Plot...", flush=True)
-        from skimage.filters import threshold_multiotsu
-        from scipy.ndimage import gaussian_filter1d
-        from scipy.signal import find_peaks
-        
-        # Calculate reference thresholds (for display only, not applied)
-        otsu_t = threshold_otsu(iq_flat)
+    if iq_t1 is not None:
         try:
-            multi_otsu_vals = threshold_multiotsu(iq_flat, classes=3)
-        except Exception:
-            multi_otsu_vals = [otsu_t]
+            iq_flat = (smoothed_iq_2d[np.isin(phases, [1, 2, 3])]
+                       if phase_audit['eta_selection_enabled'] or phase_audit['user_excluded_points']
+                       else smoothed_iq_2d.ravel())
+            # --- Threshold Verification Plot (Reference Lines) ---
+            print("- Generating Threshold Verification Plot...", flush=True)
+            from skimage.filters import threshold_multiotsu
+            from scipy.ndimage import gaussian_filter1d
+            from scipy.signal import find_peaks
         
-        # Valley detection
-        hist_vals, bin_edges = np.histogram(iq_flat, bins=256)
-        smoothed = gaussian_filter1d(hist_vals.astype(float), sigma=2.0)
-        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        peaks, _ = find_peaks(smoothed, prominence=np.max(smoothed) * 0.05)
-        valley_t = None
-        if len(peaks) >= 2:
-            sorted_peaks = peaks[np.argsort(smoothed[peaks])][-2:]
-            p1, p2 = np.sort(sorted_peaks)
-            v_idx = np.argmin(smoothed[p1:p2]) + p1
-            valley_t = float(bin_centers[v_idx])
+            # Calculate reference thresholds (for display only, not applied)
+            otsu_t = threshold_otsu(iq_flat)
+            try:
+                multi_otsu_vals = threshold_multiotsu(iq_flat, classes=3)
+            except Exception:
+                multi_otsu_vals = [otsu_t]
         
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.hist(iq_flat, bins=256, color='skyblue', alpha=0.45, label='IQ Distribution (Smoothed)')
-        ax.plot(bin_centers, smoothed, color='steelblue', linewidth=1.5, alpha=0.8, label='Smoothed Trend')
+            # Valley detection
+            hist_vals, bin_edges = np.histogram(iq_flat, bins=256)
+            smoothed = gaussian_filter1d(hist_vals.astype(float), sigma=2.0)
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            peaks, _ = find_peaks(smoothed, prominence=np.max(smoothed) * 0.05)
+            valley_t = None
+            if len(peaks) >= 2:
+                sorted_peaks = peaks[np.argsort(smoothed[peaks])][-2:]
+                p1, p2 = np.sort(sorted_peaks)
+                v_idx = np.argmin(smoothed[p1:p2]) + p1
+                valley_t = float(bin_centers[v_idx])
         
-        # Reference lines (참고용)
-        ax.axvline(otsu_t, color='black', linestyle='--', linewidth=1.5, label=f'Otsu: {otsu_t:.1f}')
-        for j, mv in enumerate(multi_otsu_vals):
-            lbl = f'Multi-Otsu T{j+1}: {mv:.1f}' if j == 0 else f'Multi-Otsu T{j+1}: {mv:.1f}'
-            ax.axvline(mv, color='orange', linestyle='--', linewidth=1.5, label=lbl)
-        if valley_t is not None:
-            ax.axvline(valley_t, color='blue', linestyle='--', linewidth=1.5, label=f'Valley: {valley_t:.1f}')
+            fig, ax = plt.subplots(figsize=(12, 6))
+            ax.hist(iq_flat, bins=256, color='skyblue', alpha=0.45, label='IQ Distribution (Smoothed)')
+            ax.plot(bin_centers, smoothed, color='steelblue', linewidth=1.5, alpha=0.8, label='Smoothed Trend')
         
-        # Actually applied threshold (실제 적용값)
-        ax.axvline(iq_t1, color='red', linestyle='-', linewidth=2.5, label=f'✔ Applied: {iq_t1:.1f}')
+            # Reference lines (참고용)
+            ax.axvline(otsu_t, color='black', linestyle='--', linewidth=1.5, label=f'Otsu: {otsu_t:.1f}')
+            for j, mv in enumerate(multi_otsu_vals):
+                lbl = f'Multi-Otsu T{j+1}: {mv:.1f}' if j == 0 else f'Multi-Otsu T{j+1}: {mv:.1f}'
+                ax.axvline(mv, color='orange', linestyle='--', linewidth=1.5, label=lbl)
+            if valley_t is not None:
+                ax.axvline(valley_t, color='blue', linestyle='--', linewidth=1.5, label=f'Valley: {valley_t:.1f}')
         
-        ax.set_title(f"Threshold Verification - {base_name}\n(점선=참고용, 빨간 실선=실제 적용값)", fontsize=12)
-        ax.set_xlabel("Image Quality (IQ)")
-        ax.set_ylabel("Frequency")
-        ax.legend(loc='upper right', fontsize=9)
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f"threshold_check_{base_name}.png"), dpi=150)
-        export_histogram(os.path.join(output_dir, f"threshold_check_{base_name}.png"),
-                         hist_vals, bin_edges, {'smoothed_iq': iq_flat},
-                         {'smoothed_count': smoothed, 'applied_iq_cutoff': iq_t1,
-                          'otsu_iq_cutoff': otsu_t, 'valley_iq_cutoff': valley_t})
-        plt.close()
+            # Actually applied threshold (실제 적용값)
+            ax.axvline(iq_t1, color='red', linestyle='-', linewidth=2.5, label=f'✔ Applied: {iq_t1:.1f}')
         
-    except Exception as e:
-        print(f"Warning: threshold plot unavailable: {e}")
+            ax.set_title(f"Threshold Verification - {base_name}\n(점선=참고용, 빨간 실선=실제 적용값)", fontsize=12)
+            ax.set_xlabel("Image Quality (IQ)")
+            ax.set_ylabel("Frequency")
+            ax.legend(loc='upper right', fontsize=9)
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, f"threshold_check_{base_name}.png"), dpi=150)
+            export_histogram(os.path.join(output_dir, f"threshold_check_{base_name}.png"),
+                             hist_vals, bin_edges, {'smoothed_iq': iq_flat},
+                             {'smoothed_count': smoothed, 'applied_iq_cutoff': iq_t1,
+                              'otsu_iq_cutoff': otsu_t, 'valley_iq_cutoff': valley_t})
+            plt.close()
+
+        except Exception as e:
+            print(f"Warning: threshold plot unavailable: {e}")
 
     # 3. Grain Segmentation (Original Logic)
     angle_threshold_rad = np.deg2rad(5.0)
@@ -136,7 +151,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
     next_grain_id = 0
     
     for p_id in np.unique(phases):
-        if p_id == 0: continue
+        if p_id in (0, 4): continue
         mask = (phases == p_id) & (ci_map >= 0.1)
         if not np.any(mask): continue
         symmetry = analysis_symmetry(xmap, phase_mapping, p_id, gamma_mode)
@@ -168,7 +183,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
 
     
     # 5. Boundary & Contiguity (Original N_11/N_12 Logic)
-    gb_right, gb_bottom = measured_boundaries(dilated_phases, dilated_grain_ids, valid_scan_mask)
+    gb_right, gb_bottom = measured_boundaries(dilated_phases, dilated_grain_ids, valid_scan_mask & np.isin(dilated_phases, [1, 2, 3]))
     coco_right = (dilated_phases[:, :-1] == 2) & (dilated_phases[:, 1:] == 2)
     coco_bottom = (dilated_phases[:-1, :] == 2) & (dilated_phases[1:, :] == 2)
     gb_right &= ~coco_right; gb_bottom &= ~coco_bottom
@@ -240,8 +255,9 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
     sd_g_n = np.std(d_eq[g_phases==3], ddof=1) if np.sum(g_phases==3) > 1 else 0
 
     vol_co = (np.sum(dilated_phases==2)/included_pixels)*100
-    mfp_l = (gs_wc_a * (vol_co/100)) / ((1 - vol_co/100) * (1 - C_WC_Line)) if (1-vol_co/100)*(1-C_WC_Line)>0 else 0
-    mfp_a = (gs_wc_a * (vol_co/100)) / ((1 - vol_co/100) * (1 - C_WC_Area)) if (1-vol_co/100)*(1-C_WC_Area)>0 else 0
+    co_for_mfp = phase_audit['co_percent_of_analyzed_area']
+    mfp_l = (gs_wc_a * (co_for_mfp/100)) / ((1 - co_for_mfp/100) * (1 - C_WC_Line)) if (1-co_for_mfp/100)*(1-C_WC_Line)>0 else 0
+    mfp_a = (gs_wc_a * (co_for_mfp/100)) / ((1 - co_for_mfp/100) * (1 - C_WC_Area)) if (1-co_for_mfp/100)*(1-C_WC_Area)>0 else 0
 
     # D10, D50, D90 calculation (Area-based)
     def calculate_d_metrics(diams, areas):
@@ -262,8 +278,9 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
     d10_g, d50_g, d90_g = calculate_d_metrics(d_eq[g_phases==3], cts[g_phases==3]) if np.any(g_phases==3) else (0,0,0)
 
     # Save OIM Image
-    oim = np.zeros((rows, cols, 3), dtype=np.uint8)
+    oim = np.full((rows, cols, 3), 255, dtype=np.uint8)
     oim[dilated_phases==1], oim[dilated_phases==2], oim[dilated_phases==3] = [254,0,0], [0,254,0], [0,0,254]
+    oim[dilated_phases == 4] = [183, 78, 220]
     boundary_img = np.zeros((rows, cols), dtype=bool)
     boundary_img[:, :-1] |= gb_right; boundary_img[:-1, :] |= gb_bottom
     oim[boundary_img] = [0,0,0]
@@ -272,6 +289,8 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
     ax.imshow(oim); ax.axis('off')
     legend_elements = [mpatches.Patch(color='#FE0000', label='WC Phase'), mpatches.Patch(color='#00FE00', label='Co Binder'),
                        mpatches.Patch(color='#0000FE', label='Gamma Phase (\u03B3)'), mpatches.Patch(color='#000000', label='Measured Grain Boundary')]
+    if np.any(dilated_phases == 4):
+        legend_elements.append(mpatches.Patch(color='#b74edc', label='Eta (selected)'))
     ax.legend(handles=legend_elements, loc='upper right', framealpha=0.8, fontsize=12)
     plt.savefig(os.path.join(output_dir, f"OIM_CLEAN_{base_name}.png"), bbox_inches='tight', pad_inches=0.1)
     plt.close()
@@ -304,6 +323,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
         plt.close()
 
     return {
+        **eta_metrics, "Excluded_Area": phase_audit["excluded_area_percent"],
         "PhaseAudit": phase_audit, "Filename": base_name, "WC_Vol": (np.sum(dilated_phases==1)/included_pixels)*100,
         "Co_Vol": vol_co, "Raw_Co": (np.sum(phases==2)/included_pixels)*100, "G_Vol": (np.sum(dilated_phases==3)/included_pixels)*100,
         "WC_N": gs_wc_n, "WC_A": gs_wc_a, "SD_WC_N": sd_wc_n, "SD_WC_A": sd_wc_a,
