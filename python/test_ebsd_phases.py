@@ -14,8 +14,8 @@ class PhaseTests(unittest.TestCase):
         header = '# Phase 1\n# MaterialName WC\n# Symmetry 62\n# Phase 2\n# MaterialName Co (Cobalt, beta - cubic)\n# Phase 4\n# MaterialName Ti C\n# Phase 5\n# MaterialName Mixed carbide\n'
         default = self.mapping(header, [0, 1, 2, 4, 5])
         legacy = self.mapping(header, [0, 1, 2, 4, 5], 'named')
-        self.assertEqual(default['Gamma'], [4, 5])
-        self.assertEqual(default['Co'], [2])
+        self.assertEqual(default['Gamma'], [2, 4, 5])
+        self.assertEqual(default['Co'], [])
         self.assertEqual(default['Other'], [])
         self.assertEqual(legacy['Gamma'], [4])
         self.assertEqual(legacy['Other'], [5])
@@ -164,7 +164,7 @@ class PhaseTests(unittest.TestCase):
             return resolve_phases(file, np.asarray(phases), mode)
 
     def test_source_ids_and_cobalt_beta_are_not_gamma(self):
-        mapping = self.mapping('# Phase 1\n# MaterialName Co (Cobalt, alpha - hex)\n# Phase 2\n# MaterialName Co (Cobalt, beta - cubic)\n# Phase 3\n# MaterialName W C\n# Symmetry 62\n', [1, 2, 3])
+        mapping = self.mapping('# Phase 1\n# MaterialName Co (Cobalt, alpha - hex)\n# Phase 2\n# MaterialName Co (Cobalt, beta - cubic)\n# Phase 3\n# MaterialName W C\n# Symmetry 62\n', [1, 2, 3], 'named')
         self.assertEqual(mapping['WC'], [3])
         self.assertEqual(mapping['Co'], [1, 2])
         self.assertEqual(mapping['Gamma'], [])
@@ -175,7 +175,7 @@ class PhaseTests(unittest.TestCase):
             mapping = {'WC': [source_id], 'Co': [], 'Gamma': [9]}
             raw = np.full(iq.shape, source_id)
             raw[0] = 9
-            phases, _, audit = split_wc_co(iq, raw, mapping, 9)
+            phases, _, audit = split_wc_co(iq, raw, mapping, 9, gamma_mode='named')
             self.assertTrue(np.all(phases[0] == 3))
             self.assertEqual(np.sum(phases == 2), int(90 * 0.14798489327456158))
             self.assertAlmostEqual(audit['gamma_percent'], 10)
@@ -184,16 +184,44 @@ class PhaseTests(unittest.TestCase):
         iq = np.ones((10, 10))
         mapping = {'WC': [3], 'Co': [], 'Gamma': []}
         for weight, expected in ((0, 0), (100, 100), (9, 14)):
-            phases, _, _ = split_wc_co(iq, iq * 3, mapping, weight)
+            phases, _, _ = split_wc_co(iq, iq * 3, mapping, weight, gamma_mode='named')
             self.assertEqual(int(np.sum(phases == 2)), expected)
 
     def test_excluded_sites_are_not_co(self):
         iq = np.arange(12.).reshape(3, 4)
         valid = np.ones(iq.shape, dtype=bool)
         valid[0] = False
-        phases, _, audit = split_wc_co(iq, iq * 0 + 3, {'WC': [3], 'Co': [], 'Gamma': []}, 100, valid)
+        phases, _, audit = split_wc_co(iq, iq * 0 + 3, {'WC': [3], 'Co': [], 'Gamma': []}, 100, valid, gamma_mode='named')
         self.assertTrue(np.all(phases[0] == 0))
         self.assertEqual(audit['co_percent_before_cleanup'], 100)
+
+    def test_wc_preserved_and_both_cobalt_structures_compete_with_gamma_by_iq(self):
+        # Lowest IQ WC must remain WC; Co names/structures do not protect points.
+        raw = np.array([[7, 7, 2, 4, 5, 2, 4, 5, 0, 0]])
+        iq = np.array([[0., 1., 90., 2., 3., 80., 4., 70., 60., -1.]])
+        mapping = {'WC': [7], 'Co': [], 'Gamma': [2, 4, 5]}
+        phases, _, audit = split_wc_co(iq, raw, mapping, 20)
+        np.testing.assert_array_equal(phases, [[1, 1, 3, 2, 2, 3, 3, 3, 3, 0]])
+        self.assertAlmostEqual(audit['co_percent_before_cleanup'], 200 / 9)
+        self.assertIsNotNone(audit['co_target_percent_of_total'])
+
+    def test_wc_first_otsu_uses_only_non_wc(self):
+        raw = np.array([[7, 7, 2, 4, 5, 5]])
+        phases, _, _ = split_wc_co(np.array([[10000., 10000., 1., 1., 100., 100.]]), raw, {'WC': [7], 'Co': [], 'Gamma': [2, 4, 5]})
+        np.testing.assert_array_equal(phases, [[1, 1, 2, 2, 3, 3]])
+
+    def test_wc_first_rejects_impossible_co_target(self):
+        with self.assertRaisesRegex(ValueError, 'WC 외 영역이 부족'):
+            split_wc_co(np.ones((1, 4)), np.array([[7, 7, 7, 2]]), {'WC': [7], 'Co': [], 'Gamma': [2]}, 100)
+
+    def test_wc_first_phase_number_permutation_and_ties(self):
+        for wc_id, other_id in ((7, 2), (1, 9)):
+            raw = np.full((2, 5), other_id); raw[:, 0] = wc_id
+            mapping = {'WC': [wc_id], 'Co': [], 'Gamma': [other_id]}
+            phases, _, _ = split_wc_co(np.ones(raw.shape), raw, mapping, 9)
+            self.assertTrue(np.all(phases[:, 0] == 1))
+            self.assertEqual(np.sum(phases == 2), 1)
+            self.assertEqual(np.sum(phases == 3), 7)
 
     def test_corrupt_record_is_masked_without_guessing(self):
         header = '# GRID: SquareGrid\n# XSTEP: 1\n# YSTEP: 1\n# NCOLS_ODD: 2\n# NCOLS_EVEN: 2\n# NROWS: 2\n# Phase 3\n# MaterialName WC\n'

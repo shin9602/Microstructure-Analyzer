@@ -142,8 +142,8 @@ def main():
         writer.writerows(rows)
     txt_path = run_dir / "EBSD_report.txt"
     with txt_path.open("w", encoding="utf-8") as stream:
-        mode_label = 'WC·Co 외 gamma상 통합 (FCC)' if args.gamma_mode == 'all_other' else '상 이름 기준 (기존)'
-        stream.write(f"EBSD 통합 분석 결과\ngamma상 모드: {mode_label}\n기존 방위 사용 · 원본 패턴 재인덱싱 아님\n입도: 등가원직경(µm), 입계 기준: 5°, CI ≥ 0.1\n기본 입도: 판정 가능한 입자만 계산, 거리 보간 없음 / 형상·방위 입도: 외곽 10px 및 5px 미만 입자 제외\nCo 입력값: WC-Co 영역 중량비 기준, IQ 순위로 위치 추정.\n\n")
+        mode_label = 'WC 유지 → IQ로 Co → 나머지 gamma (FCC)' if args.gamma_mode == 'all_other' else '상 이름 기준 (기존)'
+        stream.write(f"EBSD 통합 분석 결과\ngamma상 모드: {mode_label}\n기존 방위 사용 · 원본 패턴 재인덱싱 아님\n입도: 등가원직경(µm), 입계 기준: 5°, CI ≥ 0.1\n기본 입도: 판정 가능한 입자만 계산, 거리 보간 없음 / 형상·방위 입도: 외곽 10px 및 5px 미만 입자 제외\nCo 입력값: 중량비를 체적비로 환산하여 IQ 순위로 위치 추정. 기본 모드는 전체 유효 면적 기준으로 WC 외 영역에 배정, 기존 모드는 WC-Co 영역 기준.\n\n")
         stream.write(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
     archive = run_dir / "EBSD_all_results.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:

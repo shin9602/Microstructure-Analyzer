@@ -134,6 +134,11 @@ try {
     assert.equal(result.errors.length, 0);
     assert.ok(result.samples[0].basic && result.samples[0].advanced);
     assert.equal(result.samples[0].basic.PhaseAudit.gamma_mode, 'all_other');
+    const audit = result.samples[0].basic.PhaseAudit;
+    assert.equal(audit.classification_order, 'WC -> non-WC IQ Co -> remaining gamma');
+    assert.ok(Math.abs(audit.co_percent_before_cleanup - audit.co_target_percent_of_total) < 0.01);
+    assert.equal(result.samples[0].advanced.PhaseAudit.classification_order, audit.classification_order);
+    console.log('PASS: basic/advanced use WC-first; Co area matches the whole-map target:', audit.co_percent_before_cleanup);
     const image = result.samples[0].images.find(name => name.includes('IQ_MAP_'));
     assert.ok(image);
     const png = await fetch(base + '/api/ebsd-results/' + encodeURIComponent(image));
