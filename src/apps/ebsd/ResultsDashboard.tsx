@@ -21,6 +21,7 @@ const groups: { title: string; view: View; source: 'basic' | 'advanced'; rows: [
 function imageInfo(path: string): [string, View] {
   const name = path.split('/').pop() || path;
   const labels: [string, string, View][] = [['threshold_check_', 'IQ 분포 · Co 분할 기준', 'grains'], ['distribution_', 'WC 입도 분포', 'grains'], ['OIM_CLEAN_', '상 분포 · 결정립 맵', 'maps'], ['ADV_01', 'WC 결정 방위 · IPF 맵', 'maps'], ['ADV_02', '입자 종횡비 맵', 'maps'], ['ADV_03', 'Sigma-2 경계 맵', 'maps'], ['ADV_04', 'Sigma-2 방위차 분포', 'orientation'], ['ADV_05', '입자 종횡비 분포', 'grains'], ['ADV_06', '입자 원형도 분포', 'grains'], ['ADV_07', 'Z축 방위 분포', 'orientation']];
+  if (name.startsWith('ADV_08_IPF_ALL_')) return ['전체 상 IPF · 원본 방위 (낮은 CI 포함)', 'maps'];
   const match = labels.find(([prefix]) => name.startsWith(prefix));
   return match ? [match[1], match[2]] : [name.replace(/_/g, ' '), 'orientation'];
 }

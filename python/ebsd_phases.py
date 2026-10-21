@@ -163,7 +163,9 @@ def read_phase_definitions(path):
 def phase_role(definition):
     name = definition.get("MaterialName", "").lower()
     formula = re.sub(r"[\s_()\-,]", "", definition.get("Formula", "").lower())
-    compact = re.sub(r"[\s_()\-,]", "", name)
+    # Vendor material names may append mineral names or descriptive text.
+    base_name = re.split(r"[\(\[]", name, maxsplit=1)[0]
+    compact = re.sub(r"[\s_()\-,]", "", base_name)
     if compact in ("wc", "tungstencarbide", "tungstenmonocarbide") or formula == "wc":
         return "WC"
     if re.match(r"^(co\b|cobalt\b)", name) or formula == "co":
@@ -173,6 +175,69 @@ def phase_role(definition):
     if re.search(r"gamma|γ|감마", name) or compact in ("tic", "tac", "nbc", "vc", "titaniumcarbide", "tantalumcarbide", "niobiumcarbide", "vanadiumcarbide") or formula in ("tic", "tac", "nbc", "vc"):
         return "Gamma"
     return None
+
+
+def clean_phase_map(phases, grain_ids, valid_scan_mask):
+    """Remove isolated grain seeds without inventing orientations in CI gaps.
+
+    Phase assignment and orientation confidence are separate. A phase may be
+    recorded even when no reliable grain can be reconstructed there. Never
+    extend grain IDs by Euclidean distance: that creates Voronoi boundaries
+    unrelated to measured misorientation, including across phase interfaces.
+    """
+    labels, counts = np.unique(grain_ids, return_counts=True)
+    retained = labels[(labels >= 0) & (counts >= 2)]
+    reliable = np.isin(grain_ids, retained)
+    output_phases, output_ids = phases.copy(), grain_ids.copy()
+    output_ids[~reliable] = -1
+    output_phases[~valid_scan_mask] = 0
+    output_ids[~valid_scan_mask] = -1
+    return output_phases, output_ids
+
+
+def measured_boundaries(phases, grain_ids, valid_scan_mask):
+    """Count interfaces only where both endpoints have a resolved grain.
+
+    Binder does not need crystallographic orientation. Missing hard-phase
+    orientations are unknown, not grains or boundaries around holes.
+    """
+    known = valid_scan_mask & ((grain_ids >= 0) | (phases == 2))
+    result = []
+    for a, b in ((np.s_[:, :-1], np.s_[:, 1:]),
+                 (np.s_[:-1, :], np.s_[1:, :])):
+        boundary = (grain_ids[a] != grain_ids[b]) | (phases[a] != phases[b])
+        boundary &= known[a] & known[b]
+        boundary &= ~((phases[a] == 2) & (phases[b] == 2))
+        result.append(boundary)
+    return tuple(result)
+
+
+def source_ipf_map(xmap, rotations, source_phases, valid_scan_mask):
+    """Color source orientations with each recorded phase's own symmetry.
+
+    Includes low-CI indexed points for inspection; never used to reconstruct
+    grains. IQ-derived WC/Co labels must not select the source crystal symmetry.
+    """
+    from orix.quaternion import Orientation
+    from orix.vector import Vector3d
+    from orix.plot import IPFColorKeyTSL
+    image = np.ones(source_phases.shape + (3,), dtype=float)
+    metadata = []
+    for phase_id in np.unique(source_phases[valid_scan_mask]):
+        if phase_id <= 0:
+            continue
+        mask = valid_scan_mask & (source_phases == phase_id)
+        phase = xmap.phases[int(phase_id)]
+        group = phase.point_group
+        if group is None:
+            image[mask] = .82
+        else:
+            key = IPFColorKeyTSL(group, direction=Vector3d.zvector())
+            image[mask] = key.orientation2color(Orientation(rotations[mask], symmetry=group))
+        metadata.append({'source_phase_id': int(phase_id), 'material': phase.name,
+                         'point_group': group.name if group is not None else 'unavailable',
+                         'points': int(mask.sum()), 'colored': group is not None})
+    return image, metadata
 
 
 def resolve_phases(path, raw_phases):

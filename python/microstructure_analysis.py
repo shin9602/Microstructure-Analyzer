@@ -17,7 +17,7 @@ from skimage.filters import threshold_otsu
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry
+from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry, clean_phase_map, measured_boundaries
 from ebsd_exports import export_histogram
 
 warnings.filterwarnings('ignore')
@@ -150,6 +150,9 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
             valid_right = (mask[:, :-1] & mask[:, 1:]) & (angle_right <= angle_threshold_rad)
             angle_bottom = ori_2d[:-1, :].angle_with(ori_2d[1:, :])
             valid_bottom = (mask[:-1, :] & mask[1:, :]) & (angle_bottom <= angle_threshold_rad)
+            # TiC and NbC share a gamma family, not a crystallographic phase.
+            valid_right &= raw_phases_2d[:, :-1] == raw_phases_2d[:, 1:]
+            valid_bottom &= raw_phases_2d[:-1, :] == raw_phases_2d[1:, :]
         
         e1 = np.concatenate([node_indices[:, :-1][valid_right], node_indices[:-1, :][valid_bottom]])
         e2 = np.concatenate([node_indices[:, 1:][valid_right], node_indices[1:, :][valid_bottom]])
@@ -158,29 +161,16 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
         global_grain_ids[mask] = lbls.reshape(rows, cols)[mask] + next_grain_id
         next_grain_id += n_c
 
-    # 4. Anti-Grain & Dilation (Binder Protection Logic)
-    unique_labels, counts = np.unique(global_grain_ids, return_counts=True)
-    valid_labels = unique_labels[(unique_labels != -1) & (counts >= 2)]
-    valid_mask = np.isin(global_grain_ids, valid_labels)
-    
-    # ★ 핵심: Co(Phase 2)는 입자 크기가 작아도 노이즈로 취급하지 않고 보호함
-    # Co 픽셀은 valid_mask에 강제로 포함시켜서 다른 입자에 흡수되지 않게 방어
-    protected_mask = valid_mask | (phases == 2)
-    
-    _, index_map = distance_transform_edt(~protected_mask, return_indices=True)
-    dilated_grain_ids = global_grain_ids[index_map[0], index_map[1]]
-    
-    # Phase Map 복구: 보호된 Co는 그대로 유지, 나머지만 인접 단계로 보간
-    dilated_phases = phases.copy()
-    to_fill_mask = ~protected_mask & valid_scan_mask
-    dilated_phases[to_fill_mask] = phases[index_map[0], index_map[1]][to_fill_mask]
-    dilated_phases[~valid_scan_mask] = 0
-    dilated_grain_ids[~valid_scan_mask] = -1
+    # Do not create artificial grain boundaries by extending seeds into CI gaps.
+    dilated_phases, dilated_grain_ids = clean_phase_map(phases, global_grain_ids, valid_scan_mask)
+    phase_audit['gamma_low_ci_points'] = int(np.sum((phases == 3) & (ci_map < 0.1)))
+    phase_audit['gamma_unassigned_grain_points'] = int(np.sum((phases == 3) & (dilated_grain_ids < 0)))
+    phase_audit['wc_unassigned_grain_points'] = int(np.sum((phases == 1) & (dilated_grain_ids < 0)))
+    phase_audit['boundary_method'] = 'Measured neighbors only; CI >= 0.1; 5 degree misorientation; no distance fill'
 
     
     # 5. Boundary & Contiguity (Original N_11/N_12 Logic)
-    gb_right = (dilated_grain_ids[:, :-1] != dilated_grain_ids[:, 1:]) 
-    gb_bottom = (dilated_grain_ids[:-1, :] != dilated_grain_ids[1:, :])
+    gb_right, gb_bottom = measured_boundaries(dilated_phases, dilated_grain_ids, valid_scan_mask)
     coco_right = (dilated_phases[:, :-1] == 2) & (dilated_phases[:, 1:] == 2)
     coco_bottom = (dilated_phases[:-1, :] == 2) & (dilated_phases[1:, :] == 2)
     gb_right &= ~coco_right; gb_bottom &= ~coco_bottom
@@ -274,6 +264,8 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
     # Save OIM Image
     oim = np.zeros((rows, cols, 3), dtype=np.uint8)
     oim[dilated_phases==1], oim[dilated_phases==2], oim[dilated_phases==3] = [254,0,0], [0,254,0], [0,0,254]
+    unresolved = valid_scan_mask & (dilated_phases != 2) & (dilated_grain_ids < 0)
+    oim[unresolved] = [210, 210, 210]
     boundary_img = np.zeros((rows, cols), dtype=bool)
     boundary_img[:, :-1] |= gb_right; boundary_img[:-1, :] |= gb_bottom
     oim[boundary_img] = [0,0,0]
@@ -281,7 +273,8 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None):
     fig, ax = plt.subplots(figsize=(cols/100, rows/100), dpi=200)
     ax.imshow(oim); ax.axis('off')
     legend_elements = [mpatches.Patch(color='#FE0000', label='WC Phase'), mpatches.Patch(color='#00FE00', label='Co Binder'),
-                       mpatches.Patch(color='#0000FE', label='Gamma Phase (\u03B3)'), mpatches.Patch(color='#000000', label='Grain Boundary')]
+                       mpatches.Patch(color='#0000FE', label='Gamma Phase (\u03B3)'), mpatches.Patch(color='#000000', label='Measured Grain Boundary'),
+                       mpatches.Patch(color='#D2D2D2', label='Unresolved Grain')]
     ax.legend(handles=legend_elements, loc='upper right', framealpha=0.8, fontsize=12)
     plt.savefig(os.path.join(output_dir, f"OIM_CLEAN_{base_name}.png"), bbox_inches='tight', pad_inches=0.1)
     plt.close()

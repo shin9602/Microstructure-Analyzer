@@ -94,6 +94,8 @@ def main():
                 record["warnings"].append(f"원본 격자 {audit['source_total_points']:,}점 중 {audit['source_excluded_points']:,}점은 IQ 누락·손상 지점으로 제외했습니다. 손상된 수치는 추정 복원하지 않았습니다. 상 분율은 유효 영역 기준입니다.")
             if audit["source_phase_ids"]["Other"]:
                 record["warnings"].append(f"기타 원본 상 {audit['source_phase_ids']['Other']}은 감마상으로 지정하지 않고 기존 WC–Co IQ 분할 대상에 포함했습니다.")
+            if audit.get('gamma_unassigned_grain_points', 0) or audit.get('wc_unassigned_grain_points', 0):
+                record['warnings'].append(f"입자를 판정하지 못한 WC {audit.get('wc_unassigned_grain_points', 0):,}점, 감마상 {audit.get('gamma_unassigned_grain_points', 0):,}점은 입계 그림에서 회색으로 표시했습니다. 이 영역을 거리로 채우거나 테두리를 입계로 세지 않습니다. 면적분율에는 포함하지만 입도에서는 제외하며, 입도·연결도·평균자유행로는 판정 가능한 영역에 제한된 결과입니다.")
             emit({"type": "progress", "message": f"{file.name} · 형상·방위 분석", "percent": int((index + 0.5) / len(inputs) * 100)})
             try:
                 record["advanced"] = process_advanced_wc(str(analysis_file), str(file_out), co_wt)
@@ -101,6 +103,9 @@ def main():
                     raise ValueError("고급 지표를 계산하지 못했습니다.")
                 if record["advanced"].get("T_Idx") is None:
                     record["warnings"].append("집합조직 지수(T-Index)는 현재 계산되지 않아 미제공으로 표시합니다.")
+                ipf_audit = record['advanced'].get('PhaseAudit', {})
+                if ipf_audit.get('ipf_all_low_ci_points', 0):
+                    record['warnings'].append(f"전체 상 IPF는 원본 상별 방위를 표시하며 CI < 0.1인 {ipf_audit['ipf_all_low_ci_points']:,}점도 포함합니다. 낮은 CI 영역의 색은 방위 신뢰도가 낮으며 입계 판정에 사용하지 않습니다.")
             except Exception as error:
                 record["warnings"].append(f"형상·방위 분석: {error}")
                 print(traceback.format_exc(), flush=True)

@@ -23,7 +23,7 @@ from skimage.filters import threshold_otsu
 from skimage.measure import regionprops
 import json
 
-from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry
+from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry, source_ipf_map
 from ebsd_exports import export_histogram, mesh_data_frame
 
 warnings.filterwarnings('ignore')
@@ -139,6 +139,12 @@ def process_advanced_wc(file_path, output_dir, co_wt=None):
     ck = IPFColorKeyTSL(xmap_symmetry, direction=Vector3d.zvector()); rgb_map = ck.orientation2color(ori_wc)
     ipf_img = np.ones((rows, cols, 3)); ipf_img[mask_wc] = rgb_map[mask_wc]
     plt.imsave(os.path.join(output_dir, f"ADV_01_IPF_MAP_{base_name}.png"), ipf_img, dpi=300)
+
+    # Preserve the original phase/symmetry for this all-phase orientation view.
+    ipf_all, ipf_metadata = source_ipf_map(xmap, rotations_map, raw_phases_2d, valid_scan_mask)
+    plt.imsave(os.path.join(output_dir, f"ADV_08_IPF_ALL_{base_name}.png"), ipf_all, dpi=300)
+    phase_audit['ipf_all_source_phases'] = ipf_metadata
+    phase_audit['ipf_all_low_ci_points'] = int(np.sum(valid_scan_mask & (raw_phases_2d > 0) & (ci_map < .1)))
     
     el_map = np.ones((rows, cols, 3)); cmap_el = _get_cmap('plasma')
     for p in props: 

@@ -5,11 +5,76 @@ import unittest
 
 os.environ.setdefault('NUMBA_CACHE_DIR', str(Path(__file__).parent / '.temp_ebsd' / '.numba_cache'))
 import numpy as np
-from ebsd_phases import load_ebsd, recover_ang_table, resolve_phases, split_wc_co
+from ebsd_phases import load_ebsd, recover_ang_table, resolve_phases, split_wc_co, phase_role, clean_phase_map, measured_boundaries, source_ipf_map
 from osc_to_ang import write_ang
 
 
 class PhaseTests(unittest.TestCase):
+    def test_all_phase_ipf_uses_each_source_symmetry_and_keeps_invalid_white(self):
+        from types import SimpleNamespace
+        from orix.quaternion import Orientation, symmetry
+        from orix.plot import IPFColorKeyTSL
+        from orix.vector import Vector3d
+        phases = {1: SimpleNamespace(name='WC', point_group=symmetry.D6),
+                  4: SimpleNamespace(name='TiC', point_group=symmetry.O)}
+        source = np.array([[1, 4, 0]])
+        rotations = Orientation.from_euler([[.3, .7, .9]]).data
+        rotations = np.tile(rotations, (1, 3, 1))
+        image, metadata = source_ipf_map(SimpleNamespace(phases=phases), rotations, source, np.array([[True, True, False]]))
+        for column, phase_id in enumerate((1, 4)):
+            group = phases[phase_id].point_group
+            expected = IPFColorKeyTSL(group, direction=Vector3d.zvector()).orientation2color(Orientation(rotations[0, column:column+1], symmetry=group))
+            np.testing.assert_allclose(image[0, column], expected[0])
+        np.testing.assert_array_equal(image[0, 2], [1, 1, 1])
+        self.assertEqual([row['source_phase_id'] for row in metadata], [1, 4])
+
+    def test_mineral_name_suffix_does_not_hide_tic(self):
+        self.assertEqual(phase_role({'MaterialName': 'Ti C (khamrabaevite, hongquiite)'}), 'Gamma')
+        self.assertEqual(phase_role({'MaterialName': 'Nb C'}), 'Gamma')
+        self.assertEqual(phase_role({'MaterialName': 'Co (Cobalt, beta - cubic)'}), 'Co')
+        self.assertEqual(phase_role({'MaterialName': 'W C (hexagonal)'}), 'WC')
+
+    def test_low_ci_gamma_area_is_preserved(self):
+        phases = np.array([[1, 1, 3, 3, 2], [1, 1, 3, 3, 2]])
+        ids = np.array([[10, 10, -1, -1, -1], [10, 10, -1, -1, -1]])
+        cleaned, grains = clean_phase_map(phases, ids, np.ones(phases.shape, dtype=bool))
+        np.testing.assert_array_equal(cleaned == 3, phases == 3)
+        self.assertTrue(np.all(grains[phases == 3] == -1))
+
+    def test_missing_gamma_orientations_are_not_filled_even_in_same_region(self):
+        phases = np.array([[3, 3, 1, 3, 3], [3, 3, 1, 3, 3]])
+        ids = np.array([[7, -1, 8, -1, -1], [7, -1, 8, -1, -1]])
+        cleaned, grains = clean_phase_map(phases, ids, np.ones(phases.shape, dtype=bool))
+        np.testing.assert_array_equal(cleaned, phases)
+        self.assertTrue(np.all(grains[:, 0] == 7))
+        self.assertTrue(np.all(grains[:, 1] == -1))
+        self.assertTrue(np.all(grains[:, 3:] == -1))
+
+    def test_wc_gap_does_not_create_a_voronoi_boundary(self):
+        phases = np.ones((2, 5), dtype=int)
+        ids = np.array([[10, 10, -1, 20, 20], [10, 10, -1, 20, 20]])
+        valid = np.ones(phases.shape, dtype=bool)
+        cleaned, grains = clean_phase_map(phases, ids, valid)
+        np.testing.assert_array_equal(grains, ids)
+        right, bottom = measured_boundaries(cleaned, grains, valid)
+        self.assertFalse(right.any())
+        self.assertFalse(bottom.any())
+
+    def test_measured_interfaces_survive_but_unknown_and_binder_edges_do_not(self):
+        phases = np.array([[1, 1, 3, 3, 2, 2, 1]])
+        ids = np.array([[10, 11, 12, -1, 13, 14, -1]])
+        right, bottom = measured_boundaries(phases, ids, np.ones(phases.shape, dtype=bool))
+        np.testing.assert_array_equal(right, [[True, True, False, False, False, False]])
+        self.assertEqual(bottom.size, 0)
+
+    def test_single_pixel_noise_is_not_a_grain_boundary(self):
+        phases = np.ones((2, 3), dtype=int)
+        ids = np.array([[10, 10, 11], [10, 10, -1]])
+        valid = np.ones(phases.shape, dtype=bool)
+        cleaned, grains = clean_phase_map(phases, ids, valid)
+        self.assertEqual(grains[0, 2], -1)
+        self.assertFalse(any(edge.any() for edge in measured_boundaries(cleaned, grains, valid)))
+
     def test_osc_padding_and_irregular_rows_do_not_inflate_header(self):
         # Actual scan row lengths 3, 2, 2; trailing slots have no measurement.
         data = np.zeros((9, 10))
