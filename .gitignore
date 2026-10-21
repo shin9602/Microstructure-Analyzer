@@ -14,6 +14,10 @@ build_log.txt
 token.txt
 
 # Temp files and results
+# Local measurement inputs are data, not application source.
+26-1597/
+*.osc
+*.ang
 node_modules/
 dist/
 dist-ssr/
