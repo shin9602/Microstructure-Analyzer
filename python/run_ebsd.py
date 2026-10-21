@@ -9,6 +9,12 @@ import traceback
 import uuid
 import zipfile
 
+# Windows embeddable Python's ._pth omits the script directory, including
+# when launched by absolute path. Resolve siblings from this file, not cwd.
+_analysis_directory = str(Path(__file__).resolve().parent)
+if _analysis_directory not in sys.path:
+    sys.path.insert(0, _analysis_directory)
+
 os.environ.setdefault("MPLBACKEND", "Agg")
 os.environ.setdefault("NUMBA_CACHE_DIR", str(Path(__file__).resolve().parent / ".temp_ebsd" / ".numba_cache"))
 sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
