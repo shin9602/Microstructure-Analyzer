@@ -417,8 +417,8 @@ def grain_neighbor_connections(orientations, mask, source_phases, separate_sourc
     A unified gamma grain may cross TiC/NbC source labels. Legacy mode keeps
     source phase interfaces even when orientations are otherwise continuous.
     """
-    angle_right = orientations[:, :-1].angle_with(orientations[:, 1:])
-    angle_bottom = orientations[:-1, :].angle_with(orientations[1:, :])
+    from ebsd_performance import neighbor_angles
+    angle_right, angle_bottom = neighbor_angles(orientations, mask)
     right = mask[:, :-1] & mask[:, 1:] & (angle_right <= np.deg2rad(5.0))
     bottom = mask[:-1, :] & mask[1:, :] & (angle_bottom <= np.deg2rad(5.0))
     if separate_sources:

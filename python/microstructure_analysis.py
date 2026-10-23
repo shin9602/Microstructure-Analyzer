@@ -20,15 +20,16 @@ import matplotlib.patches as mpatches
 from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry, clean_phase_map, measured_boundaries, grain_neighbor_connections
 from ebsd_regions import load_eta_mask, smooth_iq_excluding
 from ebsd_exports import export_histogram, export_iq_map
+from ebsd_metrics import contiguity, mfp_estimate, grain_exclusion_audit
 
 warnings.filterwarnings('ignore')
 
-def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mode='all_other', phase_assignments=None, eta_selection=None, co_basis='remaining'):
+def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mode='all_other', phase_assignments=None, eta_selection=None, co_basis='remaining', loaded_data=None):
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     print(f"\n[Microstructure Analysis] Processing: {base_name}", flush=True)
     
     try:
-        xmap, table, xstep = load_ebsd(file_path)
+        xmap, table, xstep = loaded_data if loaded_data is not None else load_ebsd(file_path)
         iq_raw, ci_raw, phase_raw = table[:, 5], table[:, 6], table[:, 7]
         phase_mapping = resolve_phases(file_path, phase_raw, gamma_mode, phase_assignments)
     except Exception as e:
@@ -152,7 +153,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
     
     for p_id in np.unique(phases):
         if p_id in (0, 4): continue
-        mask = (phases == p_id) & (ci_map >= 0.1)
+        mask = (phases == p_id) & np.isfinite(ci_map) & (ci_map >= 0.1)
         if not np.any(mask): continue
         symmetry = analysis_symmetry(xmap, phase_mapping, p_id, gamma_mode)
         ori_2d = Orientation(rotations_map, symmetry=symmetry)
@@ -176,9 +177,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
 
     # Do not create artificial grain boundaries by extending seeds into CI gaps.
     dilated_phases, dilated_grain_ids = clean_phase_map(phases, global_grain_ids, valid_scan_mask)
-    phase_audit['gamma_low_ci_points'] = int(np.sum((phases == 3) & (ci_map < 0.1)))
-    phase_audit['gamma_unassigned_grain_points'] = int(np.sum((phases == 3) & (dilated_grain_ids < 0)))
-    phase_audit['wc_unassigned_grain_points'] = int(np.sum((phases == 1) & (dilated_grain_ids < 0)))
+    phase_audit.update(grain_exclusion_audit(phases, ci_map, global_grain_ids, dilated_grain_ids))
     phase_audit['boundary_method'] = 'Measured neighbors only; CI >= 0.1; 5 degree misorientation; no distance fill'
 
     
@@ -202,31 +201,28 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
     N_33 = np.sum((p_min==3) & (p_max==3))
     phase_audit['gamma_internal_boundary_edges'] = int(N_33)
     
-    # Contiguity Formulas
-    C_WC_Line = (2*N_11)/(2*N_11 + N_12) if (2*N_11 + N_12) > 0 else 0
-    C_Gamma_Line = (2*N_33)/(2*N_33 + N_23 + N_13) if (2*N_33 + N_23 + N_13) > 0 else 0
-    C_Hard_Line = (2*N_11 + 2*N_33 + 2*N_13)/(2*N_11 + 2*N_33 + 2*N_13 + N_12 + N_23) if (2*N_11 + 2*N_33 + 2*N_13 + N_12 + N_23) > 0 else 0
-    
-    C_WC_Area = N_11/(N_11 + N_12) if (N_11 + N_12) > 0 else 0
-    C_Gamma_Area = N_33/(N_33 + N_23 + N_13) if (N_33 + N_23 + N_13) > 0 else 0
-    C_Hard_Area = (N_11 + N_33 + N_13)/(N_11 + N_33 + N_13 + N_12 + N_23) if (N_11 + N_33 + N_13 + N_12 + N_23) > 0 else 0
+    phase_audit['boundary_counts'] = {k: int(v) for k, v in
+        zip(('WC_WC', 'WC_Co', 'WC_gamma', 'gamma_Co', 'gamma_gamma'), (N_11, N_12, N_13, N_23, N_33))}
+    connectivity = contiguity(N_11, N_12, N_13, N_23, N_33)
+    C_WC_Line, C_Gamma_Line, C_Hard_Line = (connectivity[k] for k in ('C_WC_L', 'C_G_L', 'C_H_L'))
+    C_WC_Area, C_Gamma_Area, C_Hard_Area = (connectivity[k] for k in ('C_WC_A', 'C_G_A', 'C_H_A'))
 
     def get_sampled_c_wc(L):
         if L <= 0: return 0
         h_idx = np.linspace(0, rows-1, min(L//2, rows), dtype=int)
         v_idx = np.linspace(0, cols-1, min(L - len(h_idx), cols), dtype=int)
-        n11_s, n12_s = 0, 0
+        n11_s, n12_s, n13_s = 0, 0, 0
         if len(h_idx)>0:
             mr = gb_right[h_idx, :]
             pm = np.minimum(dilated_phases[h_idx, :-1][mr], dilated_phases[h_idx, 1:][mr])
             px = np.maximum(dilated_phases[h_idx, :-1][mr], dilated_phases[h_idx, 1:][mr])
-            n11_s += np.sum((pm==1)&(px==1)); n12_s += np.sum((pm==1)&(px==2))
+            n11_s += np.sum((pm==1)&(px==1)); n12_s += np.sum((pm==1)&(px==2)); n13_s += np.sum((pm==1)&(px==3))
         if len(v_idx)>0:
             mb = gb_bottom[:, v_idx]
             pm = np.minimum(dilated_phases[:-1, v_idx][mb], dilated_phases[1:, v_idx][mb])
             px = np.maximum(dilated_phases[:-1, v_idx][mb], dilated_phases[1:, v_idx][mb])
-            n11_s += np.sum((pm==1)&(px==1)); n12_s += np.sum((pm==1)&(px==2))
-        return (2*n11_s)/(2*n11_s + n12_s) if (2*n11_s+n12_s)>0 else 0
+            n11_s += np.sum((pm==1)&(px==1)); n12_s += np.sum((pm==1)&(px==2)); n13_s += np.sum((pm==1)&(px==3))
+        return contiguity(n11_s, n12_s, n13_s, 0, 0)['C_WC_L']
 
     # Grain Size & MFP
     p_ids, cts = np.unique(dilated_grain_ids, return_counts=True)
@@ -255,9 +251,18 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
     sd_g_n = np.std(d_eq[g_phases==3], ddof=1) if np.sum(g_phases==3) > 1 else 0
 
     vol_co = (np.sum(dilated_phases==2)/included_pixels)*100
-    co_for_mfp = phase_audit['co_percent_of_analyzed_area']
-    mfp_l = (gs_wc_a * (co_for_mfp/100)) / ((1 - co_for_mfp/100) * (1 - C_WC_Line)) if (1-co_for_mfp/100)*(1-C_WC_Line)>0 else 0
-    mfp_a = (gs_wc_a * (co_for_mfp/100)) / ((1 - co_for_mfp/100) * (1 - C_WC_Area)) if (1-co_for_mfp/100)*(1-C_WC_Area)>0 else 0
+    hard_grains = np.isin(g_phases, [1, 3])
+    gs_hard_a = float(np.average(d_eq[hard_grains], weights=cts[hard_grains])) if hard_grains.any() else 0.0
+    co_points = int(np.sum(phases == 2))
+    wc_points = int(np.sum(phases == 1))
+    hard_points = int(np.sum(np.isin(phases, [1, 3])))
+    mfp = {}
+    for suffix in ('L', 'A'):
+        mfp[f'MFP_WC_{suffix}'] = mfp_estimate(gs_wc_a, co_points, wc_points, connectivity[f'C_WC_{suffix}'])
+        mfp[f'MFP_H_{suffix}'] = mfp_estimate(gs_hard_a, co_points, hard_points, connectivity[f'C_H_{suffix}'])
+    mfp_l, mfp_a = mfp['MFP_WC_L'], mfp['MFP_WC_A']
+    phase_audit['mfp_method'] = 'ECD-based estimate: d_area * VCo / (Vphase * (1-C)); WC or WC+gamma; not measured line-intercept MFP'
+    phase_audit['mfp_scope'] = 'Grain size and boundaries from resolved regions; phase fractions from all assigned phase points'
 
     # D10, D50, D90 calculation (Area-based)
     def calculate_d_metrics(diams, areas):
@@ -333,7 +338,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
         "C5": get_sampled_c_wc(5), "C50": get_sampled_c_wc(50), "C500": get_sampled_c_wc(500), "C5000": get_sampled_c_wc(5000),
         "C_WC_L": C_WC_Line, "C_G_L": C_Gamma_Line, "C_H_L": C_Hard_Line,
         "C_WC_A": C_WC_Area, "C_G_A": C_Gamma_Area, "C_H_A": C_Hard_Area, 
-        "MFP_L": mfp_l, "MFP_A": mfp_a
+        "Hard_A": gs_hard_a, **mfp, "MFP_L": mfp_l, "MFP_A": mfp_a
     }
 
 if __name__ == "__main__":
@@ -369,6 +374,11 @@ if __name__ == "__main__":
                 f.write(f"     r상 연결도 (C_Gamma_Line): {r['C_G_L']:.4f}\n     경질상 연결도 (C_Total_Line): {r['C_H_L']:.4f}\n")
                 f.write(f"   [연결성 (Contiguity) - 경계분율법(Interface Area)]\n")
                 f.write(f"     WC 연결도 (C_WC_Area): {r['C_WC_A']:.4f}\n     r상 연결도 (C_Gamma_Area): {r['C_G_A']:.4f}\n")
-                f.write(f"     경질상 연결도 (C_Total_Area): {r['C_H_A']:.4f}\n   [바인더 특성]\n     Co 평균자유행로 (MFP_Line): {r['MFP_L']:.4f} μm\n     Co 평균자유행로 (MFP_Area): {r['MFP_A']:.4f} μm\n")
+                f.write(f"     경질상 연결도 (C_Total_Area): {r['C_H_A']:.6f}\n   [바인더 평균자유행로 추정 · 등가원직경 기반]\n")
+                for basis, label in (('WC', 'WC'), ('H', 'WC+gamma 경질상')):
+                    for method, name in (('L', '선교차'), ('A', '경계분율')):
+                        value = r[f'MFP_{basis}_{method}']
+                        text = f'{value:.6f} μm' if value is not None else '계산 불가'
+                        f.write(f"     {label} 기준 · {name}: {text}\n")
                 f.write("-" * 60 + "\n")
         print('JSON_DATA:' + json.dumps({"type": "result_pack", "txt": "Microstructure_Report.txt", "images": [os.path.basename(i) for i in glob.glob(os.path.join(search_dir, "*.png"))]}))

@@ -8,6 +8,7 @@ import sys
 import traceback
 import uuid
 import zipfile
+from time import perf_counter
 
 # Windows embeddable Python's ._pth omits the script directory, including
 # when launched by absolute path. Resolve siblings from this file, not cwd.
@@ -40,6 +41,8 @@ def clean(value):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--uploaded")
+    parser.add_argument("--cache-dir")
+    parser.add_argument("--force-recompute", action="store_true")
     parser.add_argument("--output", required=True)
     parser.add_argument("--co-wt", type=float)
     parser.add_argument("--comp-map", default="{}")
@@ -71,17 +74,45 @@ def main():
     source = Path(folder)
     output_root = Path(args.output).resolve()
     run_dir = output_root / "runs" / uuid.uuid4().hex
-    run_dir.mkdir(parents=True)
     inputs = sorted(source.glob("*.ang"))
     ang_names = {p.stem.casefold() for p in inputs}
     inputs += [p for p in sorted(source.glob("*.osc")) if p.stem.casefold() not in ang_names]
     if not inputs:
         raise ValueError("분석할 .ang / .osc 파일이 없습니다.")
-    from microstructure_analysis import process_combined_microstructure
-    from advanced_microstructure import process_advanced_wc
-    from osc_to_ang import convert_osc_to_ang
     overrides = json.loads(args.comp_map)
+    cache = None
+    cache_keys = {}
+    batch_key = None
+    if args.cache_dir:
+        from ebsd_cache import ResultCache, algorithm_signature, sample_key, digest_json, cached_result
+        try:
+            signature = algorithm_signature()
+            cache = ResultCache(args.cache_dir, output_root, signature)
+            emit({'type': 'progress', 'message': '저장된 분석 결과 확인 중...', 'percent': 0})
+            for file in inputs:
+                key = file.with_suffix('.ang').name
+                eta = options.get('eta_masks', {}).get(key) if options.get('eta', {}).get('enabled') else None
+                if options.get('eta', {}).get('enabled') and eta is None:
+                    raise ValueError('에타 영역 선택을 먼저 완료하세요: ' + file.name)
+                cache_keys[file.name] = sample_key(file, overrides.get(key, args.co_wt), args.gamma_mode,
+                                                  options.get('phase_maps', {}).get(key), eta, co_basis, signature)
+            batch_key = digest_json([(file.name, cache_keys[file.name]) for file in inputs])
+            if not args.force_recompute:
+                saved = cache.load_batch(batch_key)
+                if saved:
+                    emit({'type': 'progress', 'message': '같은 데이터·조건의 저장 결과를 불러왔습니다.', 'percent': 100})
+                    emit(cached_result(saved))
+                    return 0
+        except Exception as error:
+            emit({'type': 'warning', 'message': '저장 결과 확인을 건너뛰고 새로 분석합니다: ' + str(error)})
+            cache = None
+    run_dir.mkdir(parents=True)
+    # Batch hits return before importing numpy/orix/matplotlib.
+    process_combined_microstructure = None
+    process_advanced_wc = None
+    from ebsd_cache import sample_files
     records, errors = [], []
+    cache_hits = 0
     for index, file in enumerate(inputs):
         file_out = run_dir / f"sample_{index + 1:03d}"
         file_out.mkdir()
@@ -89,9 +120,35 @@ def main():
         co_wt = overrides.get(file.with_suffix(".ang").name, args.co_wt)
         try:
             emit({"type": "progress", "message": f"{file.name} · 데이터 로드", "percent": int(index / len(inputs) * 100)})
+            started = perf_counter()
+            timings = {}
+            cache_key = cache_keys.get(file.name)
+            if cache and cache_key and not args.force_recompute:
+                saved = cache.load_sample(cache_key)
+                if saved:
+                    record = saved['payload']
+                    original_name = record['name']
+                    record['name'] = file.stem
+                    for section in ('basic', 'advanced'):
+                        if record.get(section):
+                            record[section]['Filename'] = file.stem
+                    record['cache'] = {'hit': True, 'stored_at': saved['created_at'], 'original_name': original_name}
+                    record['timings'] = {'cache_seconds': perf_counter() - started}
+                    records.append(record)
+                    cache_hits += 1
+                    emit({'type': 'info', 'message': file.name + ' · 같은 데이터·조건의 저장 결과 사용'})
+                    continue
+            if process_combined_microstructure is None:
+                from microstructure_analysis import process_combined_microstructure
+                from advanced_microstructure import process_advanced_wc
+                from osc_to_ang import convert_osc_to_ang
+                from ebsd_phases import load_ebsd
             analysis_file = file
             if file.suffix.lower() == ".osc":
                 analysis_file = convert_osc_to_ang(file, file_out / file.with_suffix(".ang").name)
+            loaded_data = load_ebsd(str(analysis_file))
+            timings['load_seconds'] = perf_counter() - started
+            stage_started = perf_counter()
             key = file.with_suffix('.ang').name
             assignments = options.get('phase_maps', {}).get(key)
             eta_selection = options.get('eta_masks', {}).get(key) if options.get('eta', {}).get('enabled') else None
@@ -105,10 +162,12 @@ def main():
                         hasher.update(block)
                 if hasher.hexdigest() != eta_selection['source_sha256']:
                     raise ValueError('에타 영역을 선택한 파일과 현재 파일이 다릅니다. 다시 선택하세요.')
-            record['basic'] = process_combined_microstructure(str(analysis_file), str(file_out), co_wt, args.gamma_mode, assignments, eta_selection, co_basis)
+            record['basic'] = process_combined_microstructure(str(analysis_file), str(file_out), co_wt, args.gamma_mode, assignments, eta_selection, co_basis, loaded_data=loaded_data)
             if record["basic"] is None:
                 raise ValueError("기본 분석 실패: 위의 파일/상 정보 오류를 확인하세요.")
+            timings["basic_seconds"] = perf_counter() - stage_started
             audit = record["basic"]["PhaseAudit"]
+            record["warnings"].append("평균자유행로는 면적 가중 등가원직경 기반 추정값입니다. WC 기준과 WC+gamma 경질상 기준을 각각 제공하며 직접 측정한 선절편 길이가 아닙니다.")
             if audit.get('eta_selection_enabled'):
                 record['warnings'].append('에타 크기는 선택 영역의 연결된 덩어리별 등가원직경입니다. 에타 영역은 WC·Co·gamma 입도·입계·연결도 계산에서 제외하며, 면적분율은 에타를 포함한 전체 유효 면적 기준입니다.')
             if audit.get('user_excluded_points'):
@@ -122,14 +181,14 @@ def main():
             if audit["source_phase_ids"]["Other"]:
                 record["warnings"].append(f"기타 원본 상 {audit['source_phase_ids']['Other']}은 감마상으로 지정하지 않고 기존 WC–Co IQ 분할 대상에 포함했습니다.")
             if audit.get('gamma_unassigned_grain_points', 0) or audit.get('wc_unassigned_grain_points', 0):
-                record['warnings'].append(f"입자를 판정하지 못한 WC {audit.get('wc_unassigned_grain_points', 0):,}점, gamma상 {audit.get('gamma_unassigned_grain_points', 0):,}점도 해당 상의 색으로 표시했습니다. 면적분율에는 포함하지만 입도에서는 제외하며, 입도·연결도·평균자유행로는 판정 가능한 영역에 제한된 결과입니다.")
+                record['warnings'].append(f"입자를 판정하지 못한 WC {audit.get('wc_unassigned_grain_points', 0):,}점, gamma상 {audit.get('gamma_unassigned_grain_points', 0):,}점은 상 색과 면적분율에 포함하되 입도에서 제외합니다. 원인: CI < 0.1 WC {audit.get('wc_low_ci_points', 0):,}점·gamma {audit.get('gamma_low_ci_points', 0):,}점, CI 누락 WC {audit.get('wc_invalid_ci_points', 0):,}점·gamma {audit.get('gamma_invalid_ci_points', 0):,}점, 1점 입자 WC {audit.get('wc_singleton_points', 0):,}점·gamma {audit.get('gamma_singleton_points', 0):,}점. 입도·연결도는 판정 가능한 영역 기준이며, 평균자유행로는 해당 입도·연결도와 전체 상 분율을 조합한 추정값입니다.")
             emit({"type": "progress", "message": f"{file.name} · 형상·방위 분석", "percent": int((index + 0.5) / len(inputs) * 100)})
             try:
-                record["advanced"] = process_advanced_wc(str(analysis_file), str(file_out), co_wt, args.gamma_mode, assignments, eta_selection, co_basis)
+                stage_started = perf_counter()
+                record["advanced"] = process_advanced_wc(str(analysis_file), str(file_out), co_wt, args.gamma_mode, assignments, eta_selection, co_basis, loaded_data=loaded_data)
+                timings["advanced_seconds"] = perf_counter() - stage_started
                 if record["advanced"] is None:
                     raise ValueError("고급 지표를 계산하지 못했습니다.")
-                if record["advanced"].get("T_Idx") is None:
-                    record["warnings"].append("집합조직 지수(T-Index)는 현재 계산되지 않아 미제공으로 표시합니다.")
                 ipf_audit = record['advanced'].get('PhaseAudit', {})
                 if ipf_audit.get('ipf_all_low_ci_points', 0):
                     record['warnings'].append(f"전체 상 IPF는 원본 상별 방위를 표시하며 CI < 0.1인 {ipf_audit['ipf_all_low_ci_points']:,}점도 포함합니다. 낮은 CI 영역의 색은 방위 신뢰도가 낮으며 입계 판정에 사용하지 않습니다.")
@@ -143,7 +202,17 @@ def main():
                 available = [p.relative_to(output_root).as_posix() for p in data_files if p.exists()]
                 if available:
                     record["image_data"][image_path.relative_to(output_root).as_posix()] = available
-            records.append(clean(record))
+            timings["sample_seconds"] = perf_counter() - started
+            record["timings"] = timings
+            del loaded_data
+            record = clean(record)
+            record['cache'] = {'hit': False}
+            records.append(record)
+            if cache and cache_key and record.get('advanced') is not None and not record.get('file_error'):
+                try:
+                    cache.save_sample(cache_key, record)
+                except Exception as error:
+                    emit({'type': 'warning', 'message': '이번 결과의 자동 저장 실패: ' + str(error)})
         except Exception as error:
             errors.append({"name": file.name, "message": "파일 읽기 또는 분석에 오류가 있습니다. " + str(error)})
             print(traceback.format_exc(), flush=True)
@@ -176,10 +245,23 @@ def main():
         for file in sorted(run_dir.rglob("*")):
             if file.is_file() and file.suffix.lower() in (".png", ".txt", ".csv", ".json"):
                 bundle.write(file, file.relative_to(run_dir))
+        # Cached sample images/CSVs retain their persistent paths. Include them
+        # when a new request mixes old samples and newly analyzed samples.
+        for index, record in enumerate(records, 1):
+            if record.get('cache', {}).get('hit'):
+                for relative in sorted(set(sample_files(record))):
+                    artifact = output_root / relative
+                    bundle.write(artifact, f'sample_{index:03d}/' + artifact.name)
     result = {"type": "result_pack", "mode": "combined", **report,
+              "cache": {"hits": cache_hits, "misses": len(records) - cache_hits},
               "images": [image for record in records for image in record["images"]]}
     for key, file in (("txt", txt_path), ("csv", csv_path), ("json", json_path), ("zip", archive)):
         result[key] = file.relative_to(output_root).as_posix()
+    if cache and batch_key and not errors and all(record.get('advanced') is not None and not record.get('file_error') for record in records):
+        try:
+            cache.save_batch(batch_key, result)
+        except Exception as error:
+            emit({'type': 'warning', 'message': '결과 모음 자동 저장 실패: ' + str(error)})
     emit(result)
     return 0
 

@@ -16,7 +16,10 @@ import type { IncomingMessage } from 'node:http'
 const projectRoot = path.dirname(fileURLToPath(import.meta.url))
 const ebsdRuntimeRoot = path.join(os.tmpdir(), 'AutoCalculator', 'ebsd',
   createHash('sha256').update(path.resolve(projectRoot).toLowerCase()).digest('hex').slice(0, 16))
-const ebsdResultsRoot = path.join(ebsdRuntimeRoot, 'results')
+const ebsdPersistentRoot = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), '.local', 'share'), 'AutoCalculator', 'ebsd',
+  createHash('sha256').update(path.resolve(projectRoot).toLowerCase()).digest('hex').slice(0, 16))
+const ebsdResultsRoot = path.join(ebsdPersistentRoot, 'results')
+const ebsdAnalysisCache = path.join(ebsdPersistentRoot, 'cache')
 
 async function saveUpload(req: IncomingMessage, destination: string) {
   const output = fs.createWriteStream(destination, { flags: 'wx' })
@@ -63,16 +66,17 @@ function isWindowsStorePython(exe: string): boolean {
 }
 
 function resolvePythonCommand(): string {
-  const bundledPython = path.join(projectRoot, '_tools', 'python', 'python.exe')
-  if (process.platform === 'win32' && fs.existsSync(bundledPython)) {
-    return bundledPython
-  }
-
   const envPython = process.env.PYTHON_EXE?.trim()
   if (envPython && !isWindowsStorePython(envPython)) {
     if (path.isAbsolute(envPython) && fs.existsSync(envPython)) return envPython
     if (!path.isAbsolute(envPython)) return envPython
   }
+
+  const bundledPython = path.join(projectRoot, '_tools', 'python', 'python.exe')
+  if (process.platform === 'win32' && fs.existsSync(bundledPython)) {
+    return bundledPython
+  }
+
 
   return 'python'
 }
@@ -250,6 +254,39 @@ function pythonRunnerPlugin(): Plugin {
            return;
         }
 
+        if (req.url?.startsWith('/api/ebsd-history')) {
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.setHeader('Cache-Control', 'no-store')
+          if (req.method !== 'GET') { res.statusCode = 405; res.end(JSON.stringify({ error: 'GET only' })); return }
+          const key = new URL(req.url, 'http://localhost').searchParams.get('key')
+          if (key && !/^[a-f0-9]{64}$/.test(key)) { res.statusCode = 400; res.end(JSON.stringify({ error: '잘못된 저장 결과 번호입니다.' })); return }
+          const args = ['python/ebsd_cache.py', '--cache-dir', ebsdAnalysisCache, '--output', ebsdResultsRoot]
+          if (key) args.push('--open', key)
+          const child = spawnPythonProcess(resolvePythonCommand(), args, projectRoot)
+          let stdout = ''
+          let stderr = ''
+          let ended = false
+          child.stdout.setEncoding('utf8')
+          child.stdout.on('data', (chunk: string) => { stdout += chunk })
+          child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-8000) })
+          child.on('error', error => { stderr = error.message })
+          child.on('close', code => {
+            ended = true
+            if (res.destroyed || res.writableEnded) return
+            try {
+              if (code !== 0) throw new Error(stderr || '저장 결과를 확인하지 못했습니다.')
+              const payload = JSON.parse(stdout)
+              if (payload.error) res.statusCode = 404
+              res.end(JSON.stringify(payload))
+            } catch (error) {
+              res.statusCode = 500
+              res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }))
+            }
+          })
+          res.on('close', () => { if (!ended) child.kill() })
+          return
+        }
+
         if (req.url && req.url.startsWith('/api/run-ebsd')) {
           res.setHeader('Content-Type', 'text/event-stream')
           res.setHeader('Cache-Control', 'no-cache')
@@ -302,7 +339,8 @@ function pythonRunnerPlugin(): Plugin {
             res.end()
             return
           }
-          const args = [scriptRelPath, '--output', ebsdResultsRoot]
+          const args = [scriptRelPath, '--output', ebsdResultsRoot, '--cache-dir', ebsdAnalysisCache]
+          if (urlObj.searchParams.get('reuse_cache') === '0') args.push('--force-recompute')
           analysisOptions.eta_masks = useTemp ? etaMasks.get(session) || {} : {}
           args.push('--analysis-options', JSON.stringify(analysisOptions))
           args.push('--gamma-mode', gammaMode)

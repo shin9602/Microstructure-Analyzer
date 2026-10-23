@@ -26,6 +26,7 @@ import json
 from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry, source_ipf_map
 from ebsd_regions import load_eta_mask, smooth_iq_excluding
 from ebsd_exports import export_histogram, mesh_data_frame
+from ebsd_performance import neighbor_angles, remove_edge_grains
 
 warnings.filterwarnings('ignore')
 
@@ -36,14 +37,14 @@ def _get_cmap(name):
         return registry[name]
     return cm.get_cmap(name)
 
-def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other', phase_assignments=None, eta_selection=None, co_basis='remaining'):
+def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other', phase_assignments=None, eta_selection=None, co_basis='remaining', loaded_data=None):
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     print(f"\n[Advanced Microstructure] Processing: {base_name}")
     print("- 데이터 불러오는 중...")
     
     # 1. Load Data
     try:
-        xmap, table, xstep = load_ebsd(file_path)
+        xmap, table, xstep = loaded_data if loaded_data is not None else load_ebsd(file_path)
         iq_raw, ci_raw, phase_raw = table[:, 5], table[:, 6], table[:, 7]
         phase_mapping = resolve_phases(file_path, phase_raw, gamma_mode, phase_assignments)
     except Exception as e:
@@ -89,9 +90,8 @@ def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other
     # Grain Identification
     print("- WC 결정 입자 분석 중...")
     ang_thresh = np.deg2rad(5.0)
-    angle_right = ori_wc[:, :-1].angle_with(ori_wc[:, 1:])
+    angle_right, angle_bottom = neighbor_angles(ori_wc, mask_wc)
     valid_right = (mask_wc[:, :-1] & mask_wc[:, 1:]) & (angle_right <= ang_thresh)
-    angle_bottom = ori_wc[:-1, :].angle_with(ori_wc[1:, :])
     valid_bottom = (mask_wc[:-1, :] & mask_wc[1:, :]) & (angle_bottom <= ang_thresh)
     
     y, x = np.meshgrid(np.arange(rows), np.arange(cols), indexing='ij'); node_indices = y * cols + x
@@ -119,7 +119,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other
     margin = 10; kill_zone = np.zeros((rows, cols), dtype=bool)
     kill_zone[:margin, :] = kill_zone[-margin:, :] = kill_zone[:, :margin] = kill_zone[:, -margin:] = True
     kill_zone |= binary_dilation(~valid_scan_mask, iterations=margin)
-    for g_id in np.unique(temp_labels[kill_zone & (temp_labels > 0)]): temp_labels[temp_labels == g_id] = 0
+    remove_edge_grains(temp_labels, kill_zone)
                 
     props = regionprops(temp_labels)
     el_list = [p.major_axis_length / p.minor_axis_length for p in props if p.area >= 5 and p.minor_axis_length > 0]
@@ -188,7 +188,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other
         mean_d = np.mean(density)
         return float((density / mean_d).max()) if mean_d > 1e-12 else 1.0
 
-    max_mrd_ipf, max_pf, t_idx = 1.0, [1.0, 1.0, 1.0], None
+    max_mrd_ipf, max_pf = 1.0, [1.0, 1.0, 1.0]
     sigma_deg = 7.5
 
     try:
@@ -275,7 +275,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other
         "A_R": (np.sum(is_r)/rgb_sum)*100 if rgb_sum>0 else 0,
         "A_G": (np.sum(is_g)/rgb_sum)*100 if rgb_sum>0 else 0,
         "A_B": (np.sum(is_b)/rgb_sum)*100 if rgb_sum>0 else 0,
-        "Mud_IPF": max_mrd_ipf, "T_Idx": t_idx, "Mud_P1": max_pf[0], "Mud_P2": max_pf[1], "Mud_P3": max_pf[2]
+        "Mud_IPF": max_mrd_ipf, "Mud_P1": max_pf[0], "Mud_P2": max_pf[1], "Mud_P3": max_pf[2]
     }
 
 if __name__ == "__main__":
@@ -299,7 +299,7 @@ if __name__ == "__main__":
         with open(os.path.join(search_dir, "Advanced_WC_Microstructure_Report.txt"), 'w', encoding='utf-8') as f:
             for r in all_rep:
                 f.write(f"▶ 파일명: {r['Filename']}\n   [집합조직 정량화 - MRD]\n")
-                f.write(f"     - IPF Z Density Max: {r['Mud_IPF']:.2f} (T-Index: not computed)\n")
+                f.write(f"     - IPF Z Density Max: {r['Mud_IPF']:.2f}\n")
                 f.write(f"     - [0001] Basal PF Max: {r['Mud_P1']:.2f}\n")
                 f.write(f"     - [2-1-10] Prismatic PF Max: {r['Mud_P2']:.2f}\n")
                 f.write(f"     - [10-10] Prismatic PF Max: {r['Mud_P3']:.2f}\n\n")

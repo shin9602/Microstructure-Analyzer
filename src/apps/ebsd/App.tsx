@@ -29,6 +29,10 @@ const remapCompMapKeys = (configs: Record<string, number>): Record<string, numbe
 };
 
 const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
+  const [reuseCache, setReuseCache] = useState(true);
+  const [savedRuns, setSavedRuns] = useState<{ key: string; names: string[]; created_at: string }[]>([]);
+  const [showSaved, setShowSaved] = useState(false);
+  const [loadingSaved, setLoadingSaved] = useState(false);
   const [logs, setLogs] = useState<LogMessage[]>([]);
   const [results, setResults] = useState<AnalysisResult | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -78,6 +82,25 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
     setLogs(prev => [...prev, { type: 'error', message: 'Analysis stopped by user.' }]);
   };
 
+  const loadSavedRuns = async (key?: string) => {
+    if (isProcessing || loadingSaved) return;
+    setLoadingSaved(true);
+    if (!key) setShowSaved(true);
+    try {
+      const response = await fetch(`/api/ebsd-history${key ? `?key=${encodeURIComponent(key)}` : ''}`);
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || '저장 결과를 불러오지 못했습니다.');
+      if (key) {
+        setResults(data);
+        setProgressStep('저장된 분석 결과를 불러왔습니다.'); setProgressPct(100);
+        setLogs(previous => [...previous, { type: 'success', message: '저장된 결과를 불러왔습니다. 재계산하지 않았습니다.' }]);
+        setShowSaved(false);
+      } else setSavedRuns(data.entries || []);
+    } catch (error) {
+      setLogs(previous => [...previous, { type: 'error', message: error instanceof Error ? error.message : String(error) }]);
+    } finally { setLoadingSaved(false); }
+  };
+
   const runAnalysis = async () => {
     if (isProcessing || preparingFile) return;
     if ((etaMode || gammaMode === 'manual') && !files.length) { setLogs([{ type: 'error', message: '에타/Phase 직접 지정 모드는 파일을 먼저 선택하세요.' }]); return; }
@@ -116,6 +139,7 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
       
       const params = new URLSearchParams();
       params.append('gamma_mode', gammaMode);
+      params.append('reuse_cache', reuseCache ? '1' : '0');
       params.append('analysis_options', JSON.stringify({ eta: { enabled: etaMode, co_basis: etaBasis }, phase_maps: gammaMode === 'manual' ? Object.fromEntries(files.map(file => [file.name.replace(/\.(osc|ang)$/i, '.ang'), phaseMaps[file.name]])) : {} }));
       if (useTemp && session) { params.append('temp', '1'); params.append('session', session); }
       if (compositionMode && gammaMode !== 'manual') {
@@ -302,14 +326,22 @@ const EBSDApp: React.FC<EBSDAppProps> = ({ onBack }) => {
             <h2 className="font-bold text-sm">Co 측정 방식</h2><label className="flex justify-between items-center text-sm">Co 조성 입력<input type="checkbox" disabled={isProcessing || !!preparingFile || gammaMode === 'manual'} checked={compositionMode && gammaMode !== 'manual'} onChange={e => setCompositionMode(e.target.checked)} className="w-4 h-4 accent-teal-700" /></label>
             {compositionMode && gammaMode !== 'manual' && <label className="flex justify-between items-center text-xs text-slate-500">기본 Co 중량%<input type="number" min="0" max="100" step="0.1" disabled={isProcessing || !!preparingFile} value={coWt} onChange={e => setCoWt(Number(e.target.value))} className="w-24 px-3 py-2 border border-slate-200 rounded-lg text-right font-bold text-slate-700" /></label>}
             <div className="border-t border-slate-100 pt-4 space-y-2"><label htmlFor="gamma-mode" className="block font-bold text-sm">상 분류 방식</label><select id="gamma-mode" disabled={isProcessing || !!preparingFile} value={gammaMode} onChange={e => setGammaMode(e.target.value === 'manual' ? 'manual' : e.target.value === 'named' ? 'named' : 'all_other')} className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-xs bg-white disabled:opacity-50"><option value="all_other">전체 IQ로 Co 먼저 측정 (기본)</option><option value="named">상 이름 기준 (기존)</option><option value="manual">Phase 직접 지정</option></select><p className="text-[11px] text-slate-400 leading-relaxed">{gammaMode === 'all_other' ? '전체 영역에서 낮은 IQ부터 Co를 배정하고, 남은 점을 WC와 gamma상으로 구분합니다. 결과 비율은 전체 유효 면적 기준 Area%입니다.' : gammaMode === 'manual' ? '파일별 Phase를 직접 지정합니다. 지정한 상은 IQ로 재분류하지 않으며 Co wt% 입력을 적용하지 않습니다.' : '상 이름으로 gamma상을 판별하고 원본 상 구분을 유지합니다.'}</p></div>
+            <label className="flex items-start gap-2 text-xs text-slate-500 leading-relaxed"><input type="checkbox" checked={reuseCache} disabled={isProcessing} onChange={event => setReuseCache(event.target.checked)} className="mt-0.5 accent-teal-700" /><span>같은 데이터·조건이면 저장 결과 사용<span className="block text-[10px] text-slate-400">체크를 끄면 새로 계산합니다. 결과는 이 PC에 저장됩니다.</span></span></label>
+            <button onClick={() => void loadSavedRuns()} disabled={isProcessing || loadingSaved} className="w-full py-2.5 border border-teal-200 rounded-xl text-xs font-semibold text-teal-700 flex items-center justify-center gap-2 disabled:opacity-50">{loadingSaved && <Loader2 size={14} className="animate-spin" />}저장된 분석 불러오기</button>
+            {showSaved && <section className="rounded-xl border border-slate-200 p-3 space-y-2"><div className="flex justify-between text-xs"><strong>최근 저장 결과</strong><button onClick={() => setShowSaved(false)} className="text-slate-400">닫기</button></div>{!loadingSaved && !savedRuns.length && <p className="text-[11px] text-slate-400">현재 분석 코드와 호환되는 저장 결과가 없습니다.</p>}{savedRuns.map(run => <button key={run.key} disabled={loadingSaved} onClick={() => void loadSavedRuns(run.key)} className="block w-full text-left p-2 rounded-lg bg-slate-50 hover:bg-teal-50 disabled:opacity-50"><span className="block text-xs text-slate-700 break-all">{run.names.join(', ')}</span><span className="block text-[10px] text-slate-400 mt-1">{new Date(run.created_at).toLocaleString('ko-KR')}</span></button>)}</section>}
             <button onClick={runAnalysis} disabled={isProcessing || !!preparingFile} className="w-full py-3 bg-teal-700 hover:bg-teal-800 disabled:bg-slate-300 text-white rounded-xl font-bold flex justify-center items-center gap-2">{isProcessing ? <Loader2 size={17} className="animate-spin" /> : <Play size={17} />}{isProcessing ? '분석 진행 중' : '전체 분석 실행'}</button>
             {isProcessing && <button onClick={stopAnalysis} className="w-full text-red-600 text-xs flex items-center justify-center gap-2"><XCircle size={14} />분석 중지</button>}
             <p className="text-center text-[10px] text-slate-400">상 분율 · 입도 · 연결도 · 형상 · 방위를 한 번에</p>
           </section>
-          {(isProcessing || progressPct === 100) && <section className="rounded-2xl bg-teal-50 border border-teal-100 p-4"><p className="text-xs text-teal-800 font-semibold mb-3 break-all">{progressStep}</p><div className="bg-teal-100 h-1.5 rounded-full overflow-hidden"><div className="bg-teal-600 h-full transition-all" style={{ width: `${progressPct}%` }} /></div></section>}
+
         </aside>
         <div className="space-y-5 min-w-0">
           {results ? <ResultsDashboard results={results} /> : <section className="min-h-[480px] rounded-3xl bg-white border border-slate-200 flex items-center justify-center p-8 text-center"><div className="max-w-md"><div className="mx-auto mb-6 bg-teal-50 rounded-3xl w-20 h-20 grid place-items-center"><Activity size={38} className="text-teal-600" /></div><p className="text-[10px] tracking-[0.25em] text-teal-700 font-bold mb-3">ONE RUN · COMPLETE PICTURE</p><h2 className="font-bold text-2xl tracking-tight mb-3">조직의 전체 모습을 한눈에</h2><p className="text-sm text-slate-400 leading-7">파일과 Co 조성을 설정하고 전체 분석을 실행하세요.<br />상 분율부터 입도, 형상, 결정 방위까지<br />시료별로 정리된 결과를 확인할 수 있습니다.</p>{isProcessing && <p className="text-xs text-teal-700 mt-6">{progressStep}</p>}</div></section>}
+          {(isProcessing || progressPct === 100) && <section aria-label="분석 진행 상태" className="rounded-2xl bg-teal-50 border border-teal-100 p-5">
+            <div className="flex items-center justify-between gap-3 mb-3"><div role="status" className="flex items-center gap-2 text-sm font-semibold text-teal-800">{isProcessing && <Loader2 size={17} className="animate-spin motion-reduce:animate-none" />}<span>{isProcessing ? '분석 진행 중' : '분석 완료'}</span>{isProcessing && <span className="h-2 w-2 rounded-full bg-teal-500 animate-pulse motion-reduce:animate-none" />}</div><span className="text-xs font-semibold tabular-nums text-teal-700">{Math.round(progressPct)}%</span></div>
+            <div role="progressbar" aria-label="전체 분석 진행률" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPct} className="bg-teal-100 h-2 rounded-full overflow-hidden"><div className={`bg-teal-600 h-full transition-all duration-500 ${isProcessing ? 'animate-pulse motion-reduce:animate-none' : ''}`} style={{ width: `${progressPct}%` }} /></div>
+            <p className="text-xs text-teal-800 mt-3 break-all">{progressStep || '분석을 준비하고 있습니다.'}</p>
+          </section>}
           <details className="bg-white rounded-2xl border border-slate-200 overflow-hidden" open={logs.some(log => log.type === 'error') || undefined}><summary className="px-5 py-4 text-xs font-semibold text-slate-500 cursor-pointer">실행 기록 · {logs.length}건 {logs.some(log => log.type === 'error') && '· 오류 있음'}</summary><div className="bg-slate-900 p-5 max-h-80 overflow-auto font-mono text-[11px] leading-6">{logs.length ? logs.map((log, i) => <p key={i} className={`whitespace-pre-wrap break-all ${log.type === 'error' ? 'text-red-300' : log.type === 'warning' ? 'text-amber-200' : log.type === 'success' ? 'text-teal-300' : 'text-slate-400'}`}>{log.message}</p>) : <p className="text-slate-500">실행 기록이 여기에 표시됩니다.</p>}</div></details>
         </div>
       </main>

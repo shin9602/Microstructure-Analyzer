@@ -21,9 +21,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot list version-controlled release files.' }
     $runtime = @($tracked | Where-Object {
         (($_ -match '^(src/|public/|python/)') -or ($_ -match '^(AutoCalculator\.cmd|START_HERE\.bat|apply_update\.ps1|launch_app\.ps1|requirements\.txt|version\.txt|package(-lock)?\.json|index\.html|vite\.config\.ts|tsconfig.*\.json|tailwind\.config\.js|postcss\.config\.(js|cjs)|eslint\.config\.js|README\.md|LICENSE)$')) -and
-        $_ -notmatch '(\.bak$|/test_[^/]+\.py$|implementation_plan\.md$|\.(osc|ang|zip|log)$)'
+        $_ -notmatch '(\.bak$|/test_[^/]+\.py$|implementation_plan\.md$|/validate_ebsd_folder\.py$|\.(osc|ang|zip|log)$)'
     })
-    foreach ($required in @('AutoCalculator.cmd','START_HERE.bat','apply_update.ps1','launch_app.ps1','requirements.txt','python/run_ebsd.py','python/ebsd_phases.py','python/ebsd_exports.py','python/ebsd_regions.py','python/prepare_ebsd.py','src/apps/ebsd/EtaMaskEditor.tsx','src/apps/ebsd/etaSelection.ts','src/apps/ebsd/phaseMetadata.ts','src/apps/ebsd/ResultsDashboard.tsx')) {
+    foreach ($required in @('AutoCalculator.cmd','START_HERE.bat','apply_update.ps1','launch_app.ps1','requirements.txt','python/run_ebsd.py','python/ebsd_phases.py','python/ebsd_exports.py','python/ebsd_regions.py','python/ebsd_metrics.py','python/ebsd_performance.py','python/ebsd_cache.py','python/prepare_ebsd.py','src/apps/ebsd/EtaMaskEditor.tsx','src/apps/ebsd/etaSelection.ts','src/apps/ebsd/phaseMetadata.ts','src/apps/ebsd/ResultsDashboard.tsx')) {
         if ($runtime -notcontains $required) { throw "Required release file is not staged/tracked: $required" }
     }
     # Copy only tracked runtime files. No measurement files, credentials, caches,
