@@ -27,7 +27,7 @@ def algorithm_signature():
     folder = Path(__file__).resolve().parent
     names = ('run_ebsd.py', 'microstructure_analysis.py', 'advanced_microstructure.py',
              'ebsd_phases.py', 'ebsd_regions.py', 'ebsd_exports.py', 'osc_to_ang.py',
-             'ebsd_metrics.py', 'ebsd_performance.py', 'ebsd_cache.py')
+             'ebsd_metrics.py', 'ebsd_performance.py', 'ebsd_cache.py', 'ebsd_limits.py')
     versions = {}
     for package in ('numpy', 'scipy', 'orix', 'numba', 'matplotlib', 'pandas',
                     'scikit-image', 'Pillow', 'dask', 'diffpy-structure'):

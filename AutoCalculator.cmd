@@ -36,7 +36,8 @@ try {
     [IO.Directory]::CreateDirectory($work) | Out-Null
     $zip = Join-Path $work 'app.zip'
     Invoke-WebRequest $asset.browser_download_url -OutFile $zip -Headers $headers -UseBasicParsing -TimeoutSec 120
-    if ($asset.digest -match '^sha256:(.+)$') {
+    if ($asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { throw 'Missing release checksum.' }
+    if ($asset.digest -match '^sha256:([a-fA-F0-9]{64})$') {
         if ((Get-FileDigest $zip) -ne $Matches[1]) { throw 'Download verification failed.' }
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem

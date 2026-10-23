@@ -34,6 +34,8 @@ for (const dependency of ['vite', '@vitejs/plugin-react', 'tailwindcss', 'autopr
   config = config.replaceAll(`'${dependency}'`, JSON.stringify(import.meta.resolve(dependency)));
 }
 await fsp.writeFile(configPath, config);
+const guardCode = (await transform(await fsp.readFile(path.join(workspace, 'src/server/security.ts'), 'utf8'), {loader:'ts',format:'esm'})).code;
+config = config.replace("'./src/server/security'", JSON.stringify('data:text/javascript;base64,' + Buffer.from(guardCode).toString('base64')));
 const runnableConfig = path.join(fixture, 'vite-runtime.mjs');
 await fsp.writeFile(runnableConfig, (await transform(config, { loader: 'ts', format: 'esm', target: 'node20' })).code);
 const configuration = (await import(pathToFileURL(runnableConfig).href)).default;
@@ -75,18 +77,21 @@ try {
     server: { host: '127.0.0.1', port: 0, open: false }, clearScreen: false });
   await server.listen();
   const base = `http://127.0.0.1:${server.httpServer.address().port}`;
+  const rootResponse = await fetch(base);
+  const cookie = rootResponse.headers.get('set-cookie').split(';')[0];
+  const localFetch = (url, options={}) => fetch(url, {...options, headers:{Cookie:cookie,...options.headers}});
   let reloads = 0;
   const send = server.ws.send.bind(server.ws);
   server.ws.send = (...args) => { if (args[0]?.type === 'full-reload') reloads++; return send(...args); };
   const prepare = async previous => {
-    const response = await fetch(base + '/api/clear-ebsd-temp' + (previous ? '?previous_session=' + previous : ''));
+    const response = await localFetch(base + '/api/clear-ebsd-temp' + (previous ? '?previous_session=' + previous : ''));
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.success, true);
     assert.match(body.session, /^[a-f0-9-]{36}$/);
     return body.session;
   };
-  const upload = (session, filename, body) => fetch(base + '/api/upload-ebsd?session=' + session + '&filename=' + encodeURIComponent(filename),
+  const upload = (session, filename, body) => localFetch(base + '/api/upload-ebsd?session=' + session + '&filename=' + encodeURIComponent(filename),
     { method: 'POST', body, duplex: 'half' });
   const first = await prepare();
   const second = await prepare();
@@ -108,7 +113,7 @@ try {
 
   const abortDirectory = path.join(runtime, 'uploads', third);
   const aborted = http.request(base + '/api/upload-ebsd?session=' + third + '&filename=aborted.osc',
-    { method: 'POST', headers: { 'Content-Length': 1000000 } });
+    { method: 'POST', headers: { Cookie:cookie, 'Content-Length': 1000000 } });
   aborted.on('error', () => undefined);
   aborted.write(Buffer.alloc(16384));
   await waitFor(async () => (await fsp.readdir(abortDirectory)).some(name => name.endsWith('.upload')));
@@ -129,12 +134,12 @@ try {
     const testEta = process.argv.includes('--eta');
     let expectedEta = 0, etaCount = 0, previewReference;
     if (testEta) {
-      const prepared = await fetch(base + '/api/prepare-ebsd?session=' + actualSession + '&filename=' + encodeURIComponent(name));
+      const prepared = await localFetch(base + '/api/prepare-ebsd?session=' + actualSession + '&filename=' + encodeURIComponent(name));
       assert.equal(prepared.status, 200, await prepared.clone().text());
       const descriptor = await prepared.json();
       previewReference = descriptor.iq;
-      const iq = await (await fetch(base + '/api/ebsd-results/' + encodeURIComponent(descriptor.iq))).arrayBuffer();
-      const valid = new Uint8Array(await (await fetch(base + '/api/ebsd-results/' + encodeURIComponent(descriptor.valid))).arrayBuffer());
+      const iq = await (await localFetch(base + '/api/ebsd-results/' + encodeURIComponent(descriptor.iq))).arrayBuffer();
+      const valid = new Uint8Array(await (await localFetch(base + '/api/ebsd-results/' + encodeURIComponent(descriptor.valid))).arrayBuffer());
       assert.equal(iq.byteLength, descriptor.width * descriptor.height * 4);
       const mask = new Uint8Array(valid.length);
       for (let y = Math.floor(descriptor.height * .1); y < Math.floor(descriptor.height * .3); y++) {
@@ -145,17 +150,17 @@ try {
       }
       expectedEta = etaCount / valid.reduce((a, b) => a + b, 0) * 100;
       const parameters = new URLSearchParams({session: actualSession, filename: name, width: String(descriptor.width), height: String(descriptor.height), source_sha256: descriptor.source_sha256});
-      const invalid = await fetch(base + '/api/eta-mask?' + parameters, {method:'POST', body: new Uint8Array(1)});
+      const invalid = await localFetch(base + '/api/eta-mask?' + parameters, {method:'POST', body: new Uint8Array(1)});
       assert.equal(invalid.status, 400);
       const wrongHash = new URLSearchParams(parameters); wrongHash.set('source_sha256', '0'.repeat(64));
-      assert.equal((await fetch(base + '/api/eta-mask?' + wrongHash, {method:'POST', body:mask})).status, 400);
-      const saved = await fetch(base + '/api/eta-mask?' + parameters, {method:'POST', body:mask});
+      assert.equal((await localFetch(base + '/api/eta-mask?' + wrongHash, {method:'POST', body:mask})).status, 400);
+      const saved = await localFetch(base + '/api/eta-mask?' + parameters, {method:'POST', body:mask});
       assert.equal(saved.status, 200, await saved.clone().text());
       console.log('PASS: exact-grid IQ reference, mask shape/hash rejection, and eta selection upload:', etaCount, 'test pixels');
     }
     const coWeight = process.argv[3] ?? '9';
     const options = testEta ? '&analysis_options=' + encodeURIComponent(JSON.stringify({eta:{enabled:true,co_basis:'remaining'}})) : '';
-    const text = await (await fetch(base + '/api/run-ebsd?temp=1&session=' + actualSession + '&co_wt=' + encodeURIComponent(coWeight) + options)).text();
+    const text = await (await localFetch(base + '/api/run-ebsd?temp=1&session=' + actualSession + '&co_wt=' + encodeURIComponent(coWeight) + options)).text();
     const events = text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)));
     const result = events.find(event => event.type === 'result_pack');
     assert.ok(result, text.slice(-2500));
@@ -180,17 +185,17 @@ try {
       const thresholdImage = result.samples[0].images.find(name => name.includes('threshold_check_'));
       assert.ok(thresholdImage);
       const histogram = result.samples[0].image_data[thresholdImage].find(name => !name.endsWith('_raw.csv'));
-      const rows = (await (await fetch(base + '/api/ebsd-results/' + encodeURIComponent(histogram))).text()).trim().split(/\r?\n/);
+      const rows = (await (await localFetch(base + '/api/ebsd-results/' + encodeURIComponent(histogram))).text()).trim().split(/\r?\n/);
       const countColumn = rows.shift().split(',').indexOf('count');
       assert.equal(rows.reduce((sum,row) => sum + Number(row.split(',')[countColumn]),0), audit.analysis_points);
       console.log('PASS: eta removed in both analyses; total Area% sums to 100; size plot and both CSV exports available');
     }
     const image = result.samples[0].images.find(name => name.includes('IQ_MAP_'));
     assert.ok(image);
-    const png = await fetch(base + '/api/ebsd-results/' + encodeURIComponent(image));
+    const png = await localFetch(base + '/api/ebsd-results/' + encodeURIComponent(image));
     assert.equal(png.status, 200);
     assert.equal(Buffer.from(await png.arrayBuffer()).subarray(1, 4).toString(), 'PNG');
-    const zip = await fetch(base + '/api/ebsd-results/' + encodeURIComponent(result.zip));
+    const zip = await localFetch(base + '/api/ebsd-results/' + encodeURIComponent(result.zip));
     assert.equal(zip.status, 200);
     assert.equal(Buffer.from(await zip.arrayBuffer()).subarray(0, 2).toString(), 'PK');
     await waitFor(async () => !fs.existsSync(path.join(runtime, 'uploads', actualSession)));

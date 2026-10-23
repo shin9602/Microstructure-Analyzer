@@ -1,16 +1,17 @@
 """User-selected eta masks on the exact square grid used by EBSD analysis."""
 from pathlib import Path
 import numpy as np
+from ebsd_limits import square_axes, check_grid_shape
 
 
 def square_grid(xmap, table, step):
     if xmap.size == xmap.shape[0] * xmap.shape[1]:
         shape = xmap.shape
+        check_grid_shape(*shape)
         index = np.arange(len(table)).reshape(shape)
     else:
         from scipy.spatial import cKDTree
-        x = np.arange(xmap.x.min(), xmap.x.max() + step * .5, step)
-        y = np.arange(xmap.y.min(), xmap.y.max() + step * .5, step)
+        x, y = square_axes(xmap, step)
         xx, yy = np.meshgrid(x, y)
         _, index = cKDTree(np.c_[xmap.x, xmap.y]).query(np.c_[xx.ravel(), yy.ravel()])
         index = index.reshape(xx.shape)

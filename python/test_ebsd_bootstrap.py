@@ -12,7 +12,7 @@ class BootstrapTests(unittest.TestCase):
         source = Path(__file__).resolve().parent
         modules = ('microstructure_analysis', 'advanced_microstructure',
                    'ebsd_phases', 'ebsd_exports', 'ebsd_regions', 'osc_to_ang',
-                   'ebsd_metrics', 'ebsd_performance', 'ebsd_cache')
+                   'ebsd_metrics', 'ebsd_performance', 'ebsd_cache', 'ebsd_limits')
         with tempfile.TemporaryDirectory(prefix='ebsd_한글 relocation_') as folder:
             relocated = Path(folder) / 'different installation' / 'python'
             relocated.mkdir(parents=True)

@@ -94,12 +94,14 @@ try {
         Copy-Item -LiteralPath $PackagePath -Destination $zipPath
     } else {
         $asset = $null
+        if (-not $release) { $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/tags/$LatestVer" -Headers $headers -TimeoutSec 20 }
         if ($release) { $asset = $release.assets | Where-Object { $_.name -eq "AutoCalculator-$LatestVer.zip" } | Select-Object -First 1 }
         $download = "https://github.com/$repo/releases/download/$LatestVer/AutoCalculator-$LatestVer.zip"
         if ($asset) { $download = $asset.browser_download_url }
         Write-Host "  Downloading $LatestVer..."
         Invoke-WebRequest -Uri $download -OutFile $zipPath -UseBasicParsing -Headers $headers -TimeoutSec 120
-        if ($asset -and $asset.digest -match '^sha256:(.+)$') {
+        if (-not $asset -or $asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { throw 'Missing release checksum.' }
+        if ($asset.digest -match '^sha256:([a-fA-F0-9]{64})$') {
             if ((Get-FileDigest $zipPath) -ne $Matches[1]) { throw 'Downloaded archive checksum mismatch.' }
         }
     }

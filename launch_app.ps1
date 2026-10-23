@@ -6,9 +6,14 @@ function Get-FileDigest([string]$Path) {
     try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '') }
     finally { $stream.Dispose(); $algorithm.Dispose() }
 }
-function Get-RuntimeDownload([string]$Uri, [string]$Destination) {
+function Get-RuntimeDownload([string]$Uri, [string]$Destination, [string]$ExpectedSHA256) {
+    if ($ExpectedSHA256 -notmatch "^[a-fA-F0-9]{64}$") { throw "Missing download checksum." }
     for ($attempt = 1; $attempt -le 3; $attempt++) {
-        try { Invoke-WebRequest $Uri -OutFile $Destination -UseBasicParsing -TimeoutSec 180; return }
+        try {
+            Invoke-WebRequest $Uri -OutFile $Destination -UseBasicParsing -TimeoutSec 180
+            if ((Get-FileDigest $Destination) -ne $ExpectedSHA256) { throw "Runtime download checksum mismatch." }
+            return
+        }
         catch { if ($attempt -eq 3) { throw }; Write-Host "Download interrupted; retrying ($attempt/3)..." }
     }
 }
@@ -16,7 +21,7 @@ function Test-NodeRuntime([string]$Executable) {
     try {
         if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) { return $false }
         $value = & $Executable -p 'process.versions.node' 2>$null
-        if ($LASTEXITCODE -ne 0 -or ([version]$value).Major -lt 18) { return $false }
+        if ($LASTEXITCODE -ne 0 -or (([version]$value).Major -ne 24 -or [version]$value -lt [version]"24.22.1")) { return $false }
         $npmPath = Join-Path (Split-Path -Parent $Executable) 'npm.cmd'
         if (-not (Test-Path -LiteralPath $npmPath)) { return $false }
         & $npmPath --version *> $null
@@ -25,7 +30,7 @@ function Test-NodeRuntime([string]$Executable) {
 }
 function Test-PythonExecutable([string]$Executable) {
     try {
-        & $Executable -c "import sys,struct; assert (3,10) <= sys.version_info[:2] < (3,13); assert struct.calcsize('P') == 8" *> $null
+        & $Executable -c "import sys,struct; assert (3,13,17) <= sys.version_info[:3] < (3,14,0); assert struct.calcsize('P') == 8" *> $null
         return $LASTEXITCODE -eq 0
     } catch { return $false }
 }
@@ -98,8 +103,8 @@ try {
     }
     if (-not $nodeOK) {
         $nodeZip = Join-Path $tools 'node-download.zip'
-        Get-RuntimeDownload 'https://nodejs.org/dist/v20.17.0/node-v20.17.0-win-x64.zip' $nodeZip
-        $unpacked = Join-Path $tools 'node-v20.17.0-win-x64'
+        Get-RuntimeDownload 'https://nodejs.org/dist/v24.22.1/node-v24.22.1-win-x64.zip' $nodeZip 'd2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5'
+        $unpacked = Join-Path $tools 'node-v24.22.1-win-x64'
         Move-IncompleteRuntime $unpacked
         Expand-Archive -LiteralPath $nodeZip -DestinationPath $tools -Force
         if (-not (Test-NodeRuntime (Join-Path $unpacked 'node.exe'))) { throw 'Downloaded Node.js could not run. Check Windows security software and retry.' }
@@ -127,7 +132,7 @@ try {
         $python = Join-Path $pythonDirectory 'python.exe'
         if (-not (Test-Path -LiteralPath $python) -or -not (Test-PythonExecutable $python)) {
             $pythonZip = Join-Path $tools 'python-download.zip'
-            Get-RuntimeDownload 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip' $pythonZip
+            Get-RuntimeDownload 'https://www.python.org/ftp/python/3.13.17/python-3.13.17-embed-amd64.zip' $pythonZip '9e35319bffedab8b36ad44d8f377cb4f1733bcec257a0b6d04d94f01486ddb38'
             Move-IncompleteRuntime $pythonDirectory
             Expand-Archive -LiteralPath $pythonZip -DestinationPath $pythonDirectory -Force
             Remove-Item -LiteralPath $pythonZip -Force
@@ -140,11 +145,11 @@ try {
         try { & $python -m pip --version *> $null; $pipOK = $LASTEXITCODE -eq 0 } catch { $pipOK = $false }
         if (-not $pipOK) {
             $getPip = Join-Path $tools 'get-pip.py'
-            Get-RuntimeDownload 'https://bootstrap.pypa.io/get-pip.py' $getPip
-            & $python $getPip --no-warn-script-location
+            Get-RuntimeDownload 'https://raw.githubusercontent.com/pypa/get-pip/fa4e90301bf000c36309f3ad79c3ac720b55d6df/public/get-pip.py' $getPip 'f4448a01e3ab2914c65f4ca59d4cacba6b2dbde19a483fbac46587f8bbaff424'
+            & $python $getPip --isolated --index-url https://pypi.org/simple --only-binary=:all: --no-warn-script-location
             if ($LASTEXITCODE -ne 0) { throw 'Python pip setup failed.' }
         }
-        & $python -m pip install --disable-pip-version-check --no-warn-script-location --upgrade --force-reinstall -r $requirements
+        & $python -m pip --isolated install --index-url https://pypi.org/simple --only-binary=:all: --disable-pip-version-check --no-warn-script-location --upgrade --force-reinstall -r $requirements
         if ($LASTEXITCODE -ne 0 -or -not (Test-PythonRuntime $python $requirements)) { throw 'Python package verification failed. Check the connection and launcher.log, then retry.' }
     }
     Write-Host '[3/3] Checking npm packages...'
@@ -160,7 +165,7 @@ try {
         $npmOK = Test-NpmRuntime $npm $nodeExecutable $root
     }
     if (-not $npmOK) {
-        & $npm ci --include=dev --no-audit --no-fund
+        & $npm ci --ignore-scripts --include=dev --no-audit --no-fund
         if ($LASTEXITCODE -ne 0) { throw 'npm package setup failed. Check the connection and launcher.log, then retry.' }
         if (-not (Test-NpmRuntime $npm $nodeExecutable $root)) { throw 'Installed npm dependencies or esbuild failed verification. Check Windows security software and launcher.log.' }
     }

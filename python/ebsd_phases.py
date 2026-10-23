@@ -4,12 +4,14 @@ Output labels (1=WC, 2=Co, 3=gamma) are internal analysis labels only.
 They must never be used to interpret the phase IDs in an input file.
 """
 from pathlib import Path
+import math
 import re
 import tempfile
 from io import StringIO
 
 import numpy as np
 from skimage.filters import threshold_otsu
+from ebsd_limits import check_input_file, check_grid_shape, MAX_SCAN_POINTS
 
 GAMMA_MODES = ('all_other', 'named', 'manual')
 
@@ -27,6 +29,7 @@ def load_ebsd(path):
     import copy, leaving the original intact and independent of Windows locale.
     """
     from orix import io
+    check_input_file(path)
     raw = Path(path).read_bytes()
     try:
         text = raw.decode("utf-8-sig")
@@ -40,9 +43,15 @@ def load_ebsd(path):
     except ValueError:
         file_errors.append("숫자로 읽을 수 없는 손상된 데이터 행이 있습니다.")
         data = recover_ang_table(text)
+    if len(data) > MAX_SCAN_POINTS:
+        raise ValueError("Scan point count exceeds the analysis limit")
+    match = re.search(r"^#\s*XSTEP\s*:\s*(\S+)", text, re.M | re.I)
+    if not match or not math.isfinite(float(match[1])) or float(match[1]) <= 0:
+        raise ValueError("ANG XSTEP is missing or invalid")
     grid = {key.upper(): value for key, value in re.findall(r"^#\s*(GRID|NCOLS_ODD|NCOLS_EVEN|NROWS)\s*:\s*(\S+)", text, re.M | re.I)}
     if all(key in grid for key in ("GRID", "NCOLS_ODD", "NCOLS_EVEN", "NROWS")):
         ny = int(grid["NROWS"])
+        check_grid_shape(ny, max(int(grid["NCOLS_ODD"]), int(grid["NCOLS_EVEN"])))
         expected = int(grid["NCOLS_ODD"]) * ny
         if grid["GRID"].lower() == "hexgrid":
             expected = int(grid["NCOLS_ODD"]) * ((ny + 1) // 2) + int(grid["NCOLS_EVEN"]) * (ny // 2)
@@ -68,7 +77,7 @@ def load_ebsd(path):
     if data.shape[1] < 8 or data.shape[0] != xmap.size:
         raise ValueError("ANG table size/columns do not match the orientation map")
     match = re.search(r"^#\s*XSTEP\s*:\s*(\S+)", text, re.M | re.I)
-    if not match or float(match[1]) <= 0:
+    if not match or not math.isfinite(float(match[1])) or float(match[1]) <= 0:
         raise ValueError("ANG XSTEP is missing or invalid")
     return xmap, data, float(match[1])
 
@@ -85,7 +94,12 @@ def recover_ang_table(text):
             raise ValueError(f"Damaged ANG table: missing grid field {key}")
         return match[1]
     nx1, nx2, ny = int(field("NCOLS_ODD")), int(field("NCOLS_EVEN")), int(field("NROWS"))
+    check_grid_shape(ny, max(nx1, nx2))
+    if min(nx1, nx2) <= 0:
+        raise ValueError("Invalid grid in damaged ANG file")
     dx, dy = float(field("XSTEP")), float(field("YSTEP"))
+    if not math.isfinite(dx) or not math.isfinite(dy) or dx <= 0 or dy <= 0:
+        raise ValueError("Invalid grid spacing in damaged ANG file")
     hexagonal = field("GRID").lower() == "hexgrid"
     lengths = np.array([nx1 if not hexagonal or row % 2 == 0 else nx2 for row in range(ny)])
     if dx <= 0 or dy <= 0 or ny <= 0 or np.any(lengths <= 0) or lengths.sum() > 20_000_000:

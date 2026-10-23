@@ -26,6 +26,7 @@ import json
 from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry, source_ipf_map
 from ebsd_regions import load_eta_mask, smooth_iq_excluding
 from ebsd_exports import export_histogram, mesh_data_frame
+from ebsd_limits import square_axes, check_grid_shape
 from ebsd_performance import neighbor_angles, remove_edge_grains
 
 warnings.filterwarnings('ignore')
@@ -57,8 +58,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other
     if xmap.size != expected_size:
         print("- Hexagonal Grid Detected! Converting to Square Grid...")
         from scipy.spatial import cKDTree
-        xi = np.arange(xmap.x.min(), xmap.x.max() + xstep * 0.5, xstep)
-        yi = np.arange(xmap.y.min(), xmap.y.max() + xstep * 0.5, xstep)
+        xi, yi = square_axes(xmap, xstep)
         X, Y = np.meshgrid(xi, yi); rows, cols = X.shape; num_pixels = rows * cols
         dist, idx = cKDTree(np.c_[xmap.x, xmap.y]).query(np.c_[X.ravel(), Y.ravel()], k=1)
         valid_scan_mask = (dist <= xstep * 1.5).reshape(rows, cols)
@@ -67,6 +67,7 @@ def process_advanced_wc(file_path, output_dir, co_wt=None, gamma_mode='all_other
         ci_map = ci_raw[idx].reshape(rows, cols)
         rotations_map = xmap.rotations.data[idx].reshape(rows, cols, 4)
     else:
+        check_grid_shape(rows_orig, cols_orig)
         rows, cols = rows_orig, cols_orig; num_pixels = rows * cols
         raw_phases_2d = phase_raw.reshape(rows, cols); raw_iq_2d = iq_raw.reshape(rows, cols)
         ci_map = ci_raw.reshape(rows, cols); rotations_map = xmap.rotations.reshape(rows, cols).data

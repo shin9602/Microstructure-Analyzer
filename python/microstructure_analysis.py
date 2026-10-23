@@ -20,6 +20,7 @@ import matplotlib.patches as mpatches
 from ebsd_phases import load_ebsd, resolve_phases, split_wc_co, analysis_symmetry, clean_phase_map, measured_boundaries, grain_neighbor_connections
 from ebsd_regions import load_eta_mask, smooth_iq_excluding
 from ebsd_exports import export_histogram, export_iq_map
+from ebsd_limits import square_axes, check_grid_shape
 from ebsd_metrics import contiguity, mfp_estimate, grain_exclusion_audit
 
 warnings.filterwarnings('ignore')
@@ -43,8 +44,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
         print("- Hexagonal Grid Detected! Converting to Square Grid...", flush=True)
         x_min, x_max = xmap.x.min(), xmap.x.max()
         y_min, y_max = xmap.y.min(), xmap.y.max()
-        xi = np.arange(x_min, x_max + xstep * 0.5, xstep)
-        yi = np.arange(y_min, y_max + xstep * 0.5, xstep)
+        xi, yi = square_axes(xmap, xstep)
         X, Y = np.meshgrid(xi, yi)
         rows, cols = X.shape
         num_pixels = rows * cols
@@ -57,6 +57,7 @@ def process_combined_microstructure(file_path, output_dir, co_wt=None, gamma_mod
         rotations_map = xmap.rotations.data[idx].reshape(rows, cols, 4)
     else:
         rows, cols = xmap.shape
+        check_grid_shape(rows, cols)
         num_pixels = rows * cols
         raw_phases_2d = phase_raw.reshape(rows, cols)
         raw_iq_2d = iq_raw.reshape(rows, cols)

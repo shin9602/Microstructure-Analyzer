@@ -9,9 +9,10 @@ import os from 'os'
 import { fileURLToPath } from 'url'
 import tailwindcss from 'tailwindcss'
 import autoprefixer from 'autoprefixer'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomUUID, randomBytes } from 'node:crypto'
 import { finished } from 'node:stream/promises'
 import type { IncomingMessage } from 'node:http'
+import { localRequestError, privateRequestPath, validMeasurementFilename, MAX_UPLOAD_BYTES } from './src/server/security'
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url))
 const ebsdRuntimeRoot = path.join(os.tmpdir(), 'AutoCalculator', 'ebsd',
@@ -23,6 +24,9 @@ const ebsdAnalysisCache = path.join(ebsdPersistentRoot, 'cache')
 
 async function saveUpload(req: IncomingMessage, destination: string) {
   const output = fs.createWriteStream(destination, { flags: 'wx' })
+  let received = 0
+  const limit = (chunk: Buffer) => { received += chunk.length; if (received > MAX_UPLOAD_BYTES) { req.unpipe(output); output.destroy(new Error('업로드는 파일당 1 GiB 이하로 제한됩니다.')); req.resume() } }
+  req.on('data', limit)
   const complete = finished(output)
   req.once('aborted', () => output.destroy(new Error('업로드 연결이 중단됐습니다.')))
   req.once('error', error => output.destroy(error))
@@ -36,7 +40,7 @@ async function saveUpload(req: IncomingMessage, destination: string) {
     req.resume()
     output.destroy()
     throw error
-  }
+  } finally { req.off('data', limit) }
 }
 
 // version.txt is what START_HERE.bat updates, so the UI label must follow it.
@@ -89,6 +93,7 @@ function spawnPythonProcess(pythonCmd: string, args: string[], cwd: string) {
 }
 
 function pythonRunnerPlugin(): Plugin {
+  const localSecret = randomBytes(32).toString('hex')
   const uploads = new Map<string, string>()
   const activeUploads = new Set<string>()
   const etaMasks = new Map<string, Record<string, { path: string; width: number; height: number; source_sha256: string }>>()
@@ -112,13 +117,37 @@ function pythonRunnerPlugin(): Plugin {
     name: 'python-runner',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
+        const requestError = localRequestError(req)
+        if (requestError || privateRequestPath(req.url || '/')) {
+          res.statusCode = 403; res.end('Forbidden local request'); req.resume(); return
+        }
+        res.setHeader('X-Content-Type-Options', 'nosniff')
+        const cookieName = `ac_local_session_${req.socket.localPort}`
+        const pathname = (req.url || '/').split('?')[0]
+        if (pathname === '/' || pathname === '/index.html') {
+          res.setHeader('Set-Cookie', `${cookieName}=${localSecret}; HttpOnly; SameSite=Strict; Path=/`)
+        }
+        if (pathname.startsWith('/api/')) {
+          if (!(req.headers.cookie || '').split(';').some(value => value.trim() === `${cookieName}=${localSecret}`)) {
+            res.statusCode = 401; res.setHeader('Content-Type', 'application/json; charset=utf-8')
+            res.end(JSON.stringify({ error: '앱 세션이 만료됐습니다. 화면을 새로고침하세요.' })); req.resume(); return
+          }
+          const posting = pathname === '/api/upload-ebsd' || pathname === '/api/eta-mask'
+          if (req.method !== (posting ? 'POST' : 'GET')) { res.statusCode = 405; res.end('Method not allowed'); req.resume(); return }
+          const length = req.headers['content-length']
+          if (posting && length && (!/^\d+$/.test(length) || Number(length) > MAX_UPLOAD_BYTES)) {
+            res.statusCode = 413; res.setHeader('Content-Type', 'application/json; charset=utf-8')
+            res.end(JSON.stringify({ error: '업로드는 파일당 1 GiB 이하로 제한됩니다.' })); req.resume(); return
+          }
+        }
+
         if (req.url?.startsWith('/api/prepare-ebsd') || req.url?.startsWith('/api/eta-mask')) {
           const url = new URL(req.url, 'http://localhost')
           const session = url.searchParams.get('session') || ''
           const directory = uploads.get(session)
           const filename = url.searchParams.get('filename') || ''
           res.setHeader('Content-Type', 'application/json; charset=utf-8')
-          if (!directory || activeUploads.has(session) || path.basename(filename) !== filename || !/\.(osc|ang)$/i.test(filename) || !fs.existsSync(path.join(directory, filename))) {
+          if (!directory || activeUploads.has(session) || path.basename(filename) !== filename || !validMeasurementFilename(filename) || !fs.existsSync(path.join(directory, filename))) {
             res.statusCode = 400; res.end(JSON.stringify({ error: '파일 업로드를 다시 준비한 뒤 영역을 선택하세요.' })); req.resume(); return
           }
           if (url.pathname === '/api/eta-mask') {
@@ -191,7 +220,7 @@ function pythonRunnerPlugin(): Plugin {
            const session = urlObj.searchParams.get('session') || ''
            const tempPath = uploads.get(session)
            res.setHeader('Content-Type', 'application/json; charset=utf-8')
-           if (!filename || path.basename(filename) !== filename || !/\.(ang|osc)$/i.test(filename)) {
+           if (!filename || path.basename(filename) !== filename || !validMeasurementFilename(filename)) {
                res.statusCode = 400
                res.end(JSON.stringify({ success: false, error: 'ANG 또는 OSC 파일 이름을 확인하세요.' }));
                req.resume()
@@ -228,7 +257,9 @@ function pythonRunnerPlugin(): Plugin {
         }
 
         if (req.url && req.url.startsWith('/api/ebsd-results/')) {
-           const requestedFile = decodeURIComponent(req.url.replace('/api/ebsd-results/', '').split('?')[0]);
+           let requestedFile: string;
+           try { requestedFile = decodeURIComponent(req.url.replace('/api/ebsd-results/', '').split('?')[0]) }
+           catch { res.statusCode = 400; res.end('Invalid result path'); return }
            const resultsRoot = ebsdResultsRoot;
            const filePath = path.resolve(resultsRoot, requestedFile);
            if (!filePath.startsWith(resultsRoot + path.sep)) { res.statusCode = 403; res.end('Invalid result path'); return; }
@@ -238,6 +269,9 @@ function pythonRunnerPlugin(): Plugin {
                return;
            }
            
+           const realRoot = fs.realpathSync(resultsRoot) + path.sep
+           const realFile = fs.realpathSync(filePath)
+           if (!realFile.startsWith(realRoot) || !fs.statSync(realFile).isFile()) { res.statusCode = 403; res.end('Invalid result path'); return }
            if (filePath.endsWith('.png')) res.setHeader('Content-Type', 'image/png');
            if (filePath.endsWith('.txt')) res.setHeader('Content-Type', 'text/plain; charset=utf-8');
            if (filePath.endsWith('.csv')) res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -423,6 +457,11 @@ export default defineConfig({
   // Keep each installation's cache outside OneDrive and separate from others.
   cacheDir: path.join(ebsdRuntimeRoot, 'vite-cache'),
   server: {
+    host: '127.0.0.1',
+    strictPort: true,
+    cors: false,
+    allowedHosts: ['localhost'],
+    fs: { strict: true, allow: [projectRoot, path.join(ebsdRuntimeRoot, 'vite-cache')], deny: ['**/.env', '**/.env.*', '**/*.{crt,pem,key,pfx,p12}', '**/.git/**', '**/token.txt', '**/launcher.log', '**/*.{ps1,cmd,bat,osc,ang}', '**/.aws/**', '**/.codex/**', '**/.agents/**', '**/analysis_results/**', '**/distribution/**'] },
     watch: { ignored: ['**/.temp_ebsd/**', '**/analysis_results/**', '**/distribution/**', '**/dist/**', '**/_update_temp/**', '**/_tools/**', '**/__pycache__/**', '**/.numba_cache/**', '**/*.osc', '**/*.ang'] },
   },
   css: {

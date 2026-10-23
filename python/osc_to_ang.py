@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from ebsd_limits import check_input_file, MAX_SCAN_POINTS
 
 # Marker after which scan floats begin (TSL OIM)
 _START_BYTES = bytes([0xB9, 0x0B, 0xEF, 0xFF, 0x02, 0x00, 0x00, 0x00])
@@ -36,13 +37,14 @@ def read_osc_table(path: str | Path) -> tuple[np.ndarray, float, float, dict]:
     meta : dict with n_points, ncols, nx/ny guess
     """
     path = Path(path)
+    check_input_file(path)
     raw = path.read_bytes()
     if len(raw) < 64:
         raise ValueError("File too small to be a valid .osc")
 
     header_u32 = struct.unpack_from("<8I", raw, 0)
     n = int(header_u32[6])  # number of points
-    if n <= 0:
+    if n <= 0 or n > MAX_SCAN_POINTS:
         raise ValueError(f"Invalid point count in OSC header: {n}")
 
     # Search first ~1 MiB for data marker (matches MTEX)
@@ -69,6 +71,9 @@ def read_osc_table(path: str | Path) -> tuple[np.ndarray, float, float, dict]:
     else:
         ystep = struct.unpack_from("<f", raw, pos)[0]
         pos += 4
+
+    if not np.isfinite(xstep) or not np.isfinite(ystep) or xstep <= 0 or ystep <= 0:
+        raise ValueError('OSC grid steps must be finite and positive')
 
     # Guess column count 5..30 by spatial step consistency (MTEX heuristic)
     data_start = pos
@@ -132,6 +137,7 @@ def read_osc_phases(path: str | Path) -> list[dict]:
     Returns list of {id, name, symmetry, lattice} with 1-based ids in header order.
     """
     path = Path(path)
+    check_input_file(path)
     raw = path.read_bytes()
     hs = raw.find(_HEADER_START)
     he = raw.find(_START_BYTES)
